@@ -309,7 +309,10 @@ socketClient_open(struct socket_client_init *socketInit, void *socketUserData)
     socketDesc->ssl_ctx = SSL_CTX_new(SSLv23_method());
     socketDesc->ssl = SSL_new(socketDesc->ssl_ctx);
     SSL_set_fd(socketDesc->ssl, socketDesc->socketFd);
-    SSL_connect(socketDesc->ssl);
+    if (SSL_connect(socketDesc->ssl) != 1) {
+      ezwebsocket_log(EZLOG_ERROR, "TLS/SSL handshake failed\n");
+      goto ERROR;
+    }
   }
 #else
   if (socketInit->secure) {
