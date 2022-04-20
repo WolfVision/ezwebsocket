@@ -243,7 +243,8 @@ connectionThread(void *params)
 
   FD_ZERO(&readfds);
   FD_SET(connectionDesc->connectionSocketFd, &readfds);
-  while (connectionDesc->state == SOCKET_SESSION_STATE_CONNECTED) {
+  while ((connectionDesc->state == SOCKET_SESSION_STATE_CONNECTED) &&
+         (connectionDesc->socketDesc->running == true)) {
     tv.tv_sec = 0;
     tv.tv_usec = 300000;
     FD_ZERO(&readfds);
@@ -555,9 +556,9 @@ socketServer_close(struct socket_server_desc *socketDesc)
   if (socketDesc == NULL)
     return;
 
+  socketDesc->running = false;
   ezwebsocket_log(EZLOG_DEBUG, "stopping socket server.\n");
   closeAllConnections(socketDesc);
-  socketDesc->running = false;
   pthread_join(socketDesc->tid, NULL);
   while (socketDesc->numConnections > 0)
     usleep(300000);
