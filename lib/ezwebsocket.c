@@ -1783,7 +1783,7 @@ websocketClient_open(struct websocket_client_init *wsInit, void *websocketUserDa
 
   wsConnection->socketClientDesc = socketClient_open(&socketInit, wsConnection);
   if (!wsConnection->socketClientDesc) {
-    ezwebsocket_log(EZLOG_ERROR, "socketClient_open failed\n");
+    ezwebsocket_log(EZLOG_WARNING, "socketClient_open failed\n");
     goto ERROR;
   }
 
