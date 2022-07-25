@@ -278,7 +278,7 @@ socketClient_open(struct socket_client_init *socketInit, void *socketUserData)
 
   // Connect to remote server
   if (connect(socketDesc->socketFd, (struct sockaddr *) &server, sizeof(server)) < 0) {
-    ezwebsocket_log(EZLOG_ERROR, "connection failed\n");
+    ezwebsocket_log(EZLOG_WARNING, "connection failed\n");
     goto ERROR;
   }
 
