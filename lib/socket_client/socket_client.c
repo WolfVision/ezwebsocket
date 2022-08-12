@@ -190,7 +190,7 @@ socketClient_send(void *socketDescriptor, void *msg, size_t len)
   struct socket_client_desc *socketDesc = socketDescriptor;
   int rc;
   if (socketDesc == NULL) {
-    ezwebsocket_log(EZLOG_ERROR, "error socket descriptor is NULL\n");
+    ezwebsocket_log(EZLOG_WARNING, "error socket descriptor is NULL\n");
     return -1;
   }
 
@@ -204,7 +204,7 @@ socketClient_send(void *socketDescriptor, void *msg, size_t len)
 #endif /* HAVE_OPENSSL */
     rc = send(socketDesc->socketFd, msg, len, MSG_NOSIGNAL);
   if (rc == -1) {
-    ezwebsocket_log(EZLOG_ERROR, "send failed: %s\n", strerror(errno));
+    ezwebsocket_log(EZLOG_WARNING, "send failed: %s\n", strerror(errno));
   }
   return ((size_t) rc == len ? 0 : -1);
 }
@@ -254,7 +254,7 @@ socketClient_open(struct socket_client_init *socketInit, void *socketUserData)
 
   socketDesc->socketFd = socket(AF_INET, SOCK_STREAM, 0);
   if (socketDesc->socketFd < 0) {
-    ezwebsocket_log(EZLOG_ERROR, "failed to create socket\n");
+    ezwebsocket_log(EZLOG_WARNING, "failed to create socket\n");
     goto ERROR;
   }
 
@@ -264,11 +264,11 @@ socketClient_open(struct socket_client_init *socketInit, void *socketUserData)
 
   if (setsockopt(socketDesc->socketFd, SOL_SOCKET, SO_RCVTIMEO, (char *) &timeout,
                  sizeof(timeout)) < 0)
-    ezwebsocket_log(EZLOG_ERROR, "setsockopt failed\n");
+    ezwebsocket_log(EZLOG_WARNING, "setsockopt failed\n");
 
   if (setsockopt(socketDesc->socketFd, SOL_SOCKET, SO_SNDTIMEO, (char *) &timeout,
                  sizeof(timeout)) < 0)
-    ezwebsocket_log(EZLOG_ERROR, "setsockopt failed\n");
+    ezwebsocket_log(EZLOG_WARNING, "setsockopt failed\n");
 
   struct sockaddr_in server;
 
@@ -285,22 +285,22 @@ socketClient_open(struct socket_client_init *socketInit, void *socketUserData)
   int optval = socketInit->keepalive == true;
 
   if (setsockopt(socketDesc->socketFd, SOL_SOCKET, SO_KEEPALIVE, &optval, sizeof(optval)) < 0) {
-    ezwebsocket_log(EZLOG_ERROR, "setsockopt SO_KEEPALIVE failed\n");
+    ezwebsocket_log(EZLOG_WARNING, "setsockopt SO_KEEPALIVE failed\n");
   }
 
   optval = socketInit->keep_idle_sec;
   if (setsockopt(socketDesc->socketFd, IPPROTO_TCP, TCP_KEEPIDLE, &optval, sizeof(optval)) < 0) {
-    ezwebsocket_log(EZLOG_ERROR, "setsockopt TCP_KEEPIDLE failed\n");
+    ezwebsocket_log(EZLOG_WARNING, "setsockopt TCP_KEEPIDLE failed\n");
   }
 
   optval = socketInit->keep_cnt;
   if (setsockopt(socketDesc->socketFd, IPPROTO_TCP, TCP_KEEPCNT, &optval, sizeof(optval)) < 0) {
-    ezwebsocket_log(EZLOG_ERROR, "setsockopt TCP_KEEPCNT failed\n");
+    ezwebsocket_log(EZLOG_WARNING, "setsockopt TCP_KEEPCNT failed\n");
   }
 
   optval = socketInit->keep_intvl;
   if (setsockopt(socketDesc->socketFd, IPPROTO_TCP, TCP_KEEPINTVL, &optval, sizeof(optval)) < 0) {
-    ezwebsocket_log(EZLOG_ERROR, "setsockopt TCP_KEEPINTVL failed\n");
+    ezwebsocket_log(EZLOG_WARNING, "setsockopt TCP_KEEPINTVL failed\n");
   }
 
 #ifdef HAVE_OPENSSL
@@ -310,13 +310,13 @@ socketClient_open(struct socket_client_init *socketInit, void *socketUserData)
     socketDesc->ssl = SSL_new(socketDesc->ssl_ctx);
     SSL_set_fd(socketDesc->ssl, socketDesc->socketFd);
     if (SSL_connect(socketDesc->ssl) != 1) {
-      ezwebsocket_log(EZLOG_ERROR, "TLS/SSL handshake failed\n");
+      ezwebsocket_log(EZLOG_WARNING, "TLS/SSL handshake failed\n");
       goto ERROR;
     }
   }
 #else
   if (socketInit->secure) {
-    ezwebsocket_log(EZLOG_ERROR, "openssl not compiled in - cannot use secure websocket");
+    ezwebsocket_log(EZLOG_WARNING, "openssl not compiled in - cannot use secure websocket");
     abort();
   }
 #endif /* HAVE_OPENSSL */
@@ -327,7 +327,7 @@ socketClient_open(struct socket_client_init *socketInit, void *socketUserData)
   if (pthread_create(&socketDesc->tid, NULL, socketClientThread, socketDesc) != 0) {
     socketDesc->state = SOCKET_CLIENT_STATE_DISCONNECTED;
     socketDesc->taskRunning = false;
-    ezwebsocket_log(EZLOG_ERROR, "failed to create socket client thread\n");
+    ezwebsocket_log(EZLOG_WARNING, "failed to create socket client thread\n");
     goto ERROR;
   } else {
     socketDesc->tidValid = true;

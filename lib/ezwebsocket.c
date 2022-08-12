@@ -222,7 +222,7 @@ parseHttpHeader(const char *wsHeader, size_t len, char *key)
 
   cpnt = strnstr((char *) wsHeader, WS_HS_KEY_ID, len);
   if (!cpnt) {
-    ezwebsocket_log(EZLOG_ERROR, "%s() couldn't find key\n", __func__);
+    ezwebsocket_log(EZLOG_WARNING, "%s() couldn't find key\n", __func__);
     return -1;
   }
 
@@ -270,7 +270,7 @@ sendWsHandshakeReply(struct socket_connection_desc *socketConnectionDesc, const 
 
   if (snprintf(replyHeader, sizeof(replyHeader), WS_HANDSHAKE_REPLY_BLUEPRINT, replyKey) >=
       (int) sizeof(replyHeader)) {
-    ezwebsocket_log(EZLOG_ERROR, "problem with the handshake reply key (buffer to small)\n");
+    ezwebsocket_log(EZLOG_WARNING, "problem with the handshake reply key (buffer to small)\n");
     return -1;
   }
 
@@ -306,7 +306,7 @@ checkWsHandshakeReply(struct websocket_connection_desc *wsConnectionDesc, char *
   ezwebsocket_log(EZLOG_DEBUG, "%s() HS_REPLY_ID: %.*s\n", __func__, (int) *len, header);
   cpnt = strnstr(header, WS_HS_REPLY_ID, *len);
   if (!cpnt) {
-    ezwebsocket_log(EZLOG_ERROR, "%s() couldn't find key\n", __func__);
+    ezwebsocket_log(EZLOG_WARNING, "%s() couldn't find key\n", __func__);
     return false;
   }
 
@@ -335,7 +335,7 @@ checkWsHandshakeReply(struct websocket_connection_desc *wsConnectionDesc, char *
 
   acceptString = calculateSecWebSocketAccept(wsDesc->wsKey);
   if (acceptString == NULL) {
-    ezwebsocket_log(EZLOG_ERROR, "calculateSecWebSocketAccept failed\n");
+    ezwebsocket_log(EZLOG_WARNING, "calculateSecWebSocketAccept failed\n");
     return false;
   }
 
@@ -374,13 +374,13 @@ sendWsHandshakeRequest(struct websocket_connection_desc *wsConnectionDesc)
                "Sec-WebSocket-Key: %s\r\n"
                "Sec-WebSocket-Version: 13\r\n\r\n",
                wsDesc->endpoint, wsDesc->address, wsDesc->port, wsDesc->wsKey) < 0) {
-    ezwebsocket_log(EZLOG_ERROR, "asprintf failed\n");
+    ezwebsocket_log(EZLOG_WARNING, "asprintf failed\n");
     goto EXIT;
   }
 
   if (socketClient_send(wsConnectionDesc->socketClientDesc, requestHeader, strlen(requestHeader)) ==
       -1) {
-    ezwebsocket_log(EZLOG_ERROR, "socketClient_send failed\n");
+    ezwebsocket_log(EZLOG_WARNING, "socketClient_send failed\n");
     goto EXIT;
   }
 
@@ -469,7 +469,7 @@ parseWebsocketHeader(const unsigned char *data, size_t len, struct ws_header *he
   header->opcode = data[0] & 0x0F;
   if (data[0] & 0x70) // reserved bits must be 0
   {
-    ezwebsocket_log(EZLOG_ERROR, "reserved bits must be 0\n");
+    ezwebsocket_log(EZLOG_WARNING, "reserved bits must be 0\n");
     return -1;
   }
   switch (header->opcode) {
@@ -482,7 +482,7 @@ parseWebsocketHeader(const unsigned char *data, size_t len, struct ws_header *he
     break;
 
   default:
-    ezwebsocket_log(EZLOG_ERROR, "opcode unknown (%d)\n", header->opcode);
+    ezwebsocket_log(EZLOG_WARNING, "opcode unknown (%d)\n", header->opcode);
     return -1;
   }
 
@@ -738,7 +738,7 @@ handleFirstMessage(struct websocket_connection_desc *wsConnectionDesc, const uns
   }
 
   if (wsConnectionDesc->lastMessage.data != NULL) {
-    ezwebsocket_log(EZLOG_ERROR, "last message not finished\n");
+    ezwebsocket_log(EZLOG_WARNING, "last message not finished\n");
     websocket_closeConnection(wsConnectionDesc, WS_CLOSE_CODE_PROTOCOL_ERROR);
     return WS_MSG_STATE_ERROR;
   }
@@ -750,7 +750,7 @@ handleFirstMessage(struct websocket_connection_desc *wsConnectionDesc, const uns
     else
       wsConnectionDesc->lastMessage.data = malloc(header->payloadLength);
     if (!wsConnectionDesc->lastMessage.data) {
-      ezwebsocket_log(EZLOG_ERROR, "refcnt_allocate failed dropping message\n");
+      ezwebsocket_log(EZLOG_WARNING, "refcnt_allocate failed dropping message\n");
       return WS_MSG_STATE_ERROR;
     }
 
@@ -778,7 +778,7 @@ handleFirstMessage(struct websocket_connection_desc *wsConnectionDesc, const uns
     state = utf8_validate(wsConnectionDesc->lastMessage.data, wsConnectionDesc->lastMessage.len,
                           &wsConnectionDesc->lastMessage.utf8Handle);
     if ((header->fin && (state != UTF8_STATE_OK)) || (!header->fin && (state == UTF8_STATE_FAIL))) {
-      ezwebsocket_log(EZLOG_ERROR, "no valid utf8 string closing connection\n");
+      ezwebsocket_log(EZLOG_WARNING, "no valid utf8 string closing connection\n");
       websocket_closeConnection(wsConnectionDesc, WS_CLOSE_CODE_INVALID_DATA);
       return WS_MSG_STATE_ERROR;
     }
@@ -806,13 +806,13 @@ handleContMessage(struct websocket_connection_desc *wsConnectionDesc, const unsi
   char *temp;
 
   if (!wsConnectionDesc->lastMessage.firstReceived) {
-    ezwebsocket_log(EZLOG_ERROR, "missing last message closing connection\n");
+    ezwebsocket_log(EZLOG_WARNING, "missing last message closing connection\n");
     websocket_closeConnection(wsConnectionDesc, WS_CLOSE_CODE_PROTOCOL_ERROR);
     return WS_MSG_STATE_ERROR;
   }
 
   if ((wsConnectionDesc->wsType != WS_TYPE_SERVER) == header->masked) {
-    ezwebsocket_log(EZLOG_ERROR, "mask bit wrong\n");
+    ezwebsocket_log(EZLOG_WARNING, "mask bit wrong\n");
     websocket_closeConnection(wsConnectionDesc, WS_CLOSE_CODE_PROTOCOL_ERROR);
     return WS_MSG_STATE_ERROR;
   }
@@ -823,7 +823,7 @@ handleContMessage(struct websocket_connection_desc *wsConnectionDesc, const unsi
     if (header->fin) {
       temp = refcnt_allocate(wsConnectionDesc->lastMessage.len + header->payloadLength, NULL);
       if (!temp) {
-        ezwebsocket_log(EZLOG_ERROR, "refcnt_allocate failed dropping message\n");
+        ezwebsocket_log(EZLOG_WARNING, "refcnt_allocate failed dropping message\n");
         free(wsConnectionDesc->lastMessage.data);
         wsConnectionDesc->lastMessage.data = NULL;
         return WS_MSG_STATE_ERROR;
@@ -835,7 +835,7 @@ handleContMessage(struct websocket_connection_desc *wsConnectionDesc, const unsi
       temp = realloc(wsConnectionDesc->lastMessage.data,
                      wsConnectionDesc->lastMessage.len + header->payloadLength);
       if (!temp) {
-        ezwebsocket_log(EZLOG_ERROR, "realloc failed dropping message\n");
+        ezwebsocket_log(EZLOG_WARNING, "realloc failed dropping message\n");
         free(wsConnectionDesc->lastMessage.data);
         wsConnectionDesc->lastMessage.data = NULL;
         return WS_MSG_STATE_ERROR;
@@ -861,7 +861,7 @@ handleContMessage(struct websocket_connection_desc *wsConnectionDesc, const unsi
     state = utf8_validate(&wsConnectionDesc->lastMessage.data[wsConnectionDesc->lastMessage.len],
                           header->payloadLength, &wsConnectionDesc->lastMessage.utf8Handle);
     if ((header->fin && state != UTF8_STATE_OK) || (!header->fin && state == UTF8_STATE_FAIL)) {
-      ezwebsocket_log(EZLOG_ERROR, "no valid utf8 string closing connection\n");
+      ezwebsocket_log(EZLOG_WARNING, "no valid utf8 string closing connection\n");
       websocket_closeConnection(wsConnectionDesc, WS_CLOSE_CODE_INVALID_DATA);
       return WS_MSG_STATE_ERROR;
     }
@@ -900,7 +900,7 @@ handlePingMessage(struct websocket_connection_desc *wsConnectionDesc, const unsi
       if (header->payloadLength) {
         temp = malloc(header->payloadLength);
         if (!temp) {
-          ezwebsocket_log(EZLOG_ERROR, "malloc failed dropping message\n");
+          ezwebsocket_log(EZLOG_WARNING, "malloc failed dropping message\n");
           return WS_MSG_STATE_ERROR;
         }
 
@@ -1102,7 +1102,7 @@ parseMessage(struct websocket_connection_desc *wsConnectionDesc, const unsigned 
     return handleDisconnectMessage(wsConnectionDesc, data, header);
 
   default:
-    ezwebsocket_log(EZLOG_ERROR, "unknown opcode (%d)\n", header->opcode);
+    ezwebsocket_log(EZLOG_WARNING, "unknown opcode (%d)\n", header->opcode);
     rc = WS_MSG_STATE_ERROR;
     break;
   }
@@ -1144,12 +1144,12 @@ websocketServer_onOpen(void *socketUserData, struct socket_connection_desc *sock
   struct websocket_connection_desc *wsConnectionDesc;
 
   if (wsDesc == NULL) {
-    ezwebsocket_log(EZLOG_ERROR, "%s(): wsDesc must not be NULL!\n", __func__);
+    ezwebsocket_log(EZLOG_WARNING, "%s(): wsDesc must not be NULL!\n", __func__);
     return NULL;
   }
 
   if (socketConnectionDesc == NULL) {
-    ezwebsocket_log(EZLOG_ERROR, "%s(): socketClientDesc must not be NULL!\n", __func__);
+    ezwebsocket_log(EZLOG_WARNING, "%s(): socketClientDesc must not be NULL!\n", __func__);
     return NULL;
   }
 
@@ -1242,7 +1242,7 @@ websocket_onClose(void *socketUserData, void *socketConnectionDesc, void *wsConn
   (void) socketConnectionDesc;
 
   if (wsConnectionDesc == NULL) {
-    ezwebsocket_log(EZLOG_ERROR, "%s(): wsConnectionDesc must not be NULL!\n", __func__);
+    ezwebsocket_log(EZLOG_WARNING, "%s(): wsConnectionDesc must not be NULL!\n", __func__);
     return;
   }
 
@@ -1321,12 +1321,12 @@ websocket_onMessage(void *socketUserData, void *socketConnectionDesc, void *conn
   char *replyKey;
 
   if (wsConnectionDesc == NULL) {
-    ezwebsocket_log(EZLOG_ERROR, "%s(): wsConnectionDesc must not be NULL!\n", __func__);
+    ezwebsocket_log(EZLOG_WARNING, "%s(): wsConnectionDesc must not be NULL!\n", __func__);
     return 0;
   }
 
   if (socketConnectionDesc == NULL) {
-    ezwebsocket_log(EZLOG_ERROR, "%s(): socketConnectionDesc must not be NULL!\n", __func__);
+    ezwebsocket_log(EZLOG_WARNING, "%s(): socketConnectionDesc must not be NULL!\n", __func__);
     return 0;
   }
 
@@ -1339,7 +1339,7 @@ websocket_onMessage(void *socketUserData, void *socketConnectionDesc, void *conn
 
         replyKey = calculateSecWebSocketAccept(key);
         if (replyKey == NULL) {
-          ezwebsocket_log(EZLOG_ERROR, "%s(): calculateSecWebSocketAccept failed!\n", __func__);
+          ezwebsocket_log(EZLOG_WARNING, "%s(): calculateSecWebSocketAccept failed!\n", __func__);
           return 0;
         }
 
@@ -1356,7 +1356,7 @@ websocket_onMessage(void *socketUserData, void *socketConnectionDesc, void *conn
         if (wsDesc->ws_onOpenLegacy != NULL)
           wsConnectionDesc->connectionUserData = wsDesc->ws_onOpenLegacy(wsDesc, wsConnectionDesc);
       } else {
-        ezwebsocket_log(EZLOG_ERROR, "parseHttpHeader failed\n");
+        ezwebsocket_log(EZLOG_WARNING, "parseHttpHeader failed\n");
       }
       break;
 
@@ -1372,7 +1372,7 @@ websocket_onMessage(void *socketUserData, void *socketConnectionDesc, void *conn
         else
           wsConnectionDesc->connectionUserData = NULL;
       } else {
-        ezwebsocket_log(EZLOG_ERROR, "checkWsHandshakeReply failed\n");
+        ezwebsocket_log(EZLOG_WARNING, "checkWsHandshakeReply failed\n");
       }
       break;
     }
@@ -1381,7 +1381,7 @@ websocket_onMessage(void *socketUserData, void *socketConnectionDesc, void *conn
   case WS_STATE_CONNECTED:
     switch (parseWebsocketHeader(msg, len, &wsHeader)) {
     case -1:
-      ezwebsocket_log(EZLOG_ERROR, "couldn't parse header\n");
+      ezwebsocket_log(EZLOG_WARNING, "couldn't parse header\n");
       websocket_closeConnection(wsConnectionDesc, WS_CLOSE_CODE_PROTOCOL_ERROR);
       return len;
 
@@ -1423,7 +1423,7 @@ websocket_onMessage(void *socketUserData, void *socketConnectionDesc, void *conn
         wsConnectionDesc->lastMessage.complete = 0;
         wsConnectionDesc->timeout.tv_sec = 0;
         wsConnectionDesc->timeout.tv_nsec = 0;
-        ezwebsocket_log(EZLOG_ERROR, "message timeout");
+        ezwebsocket_log(EZLOG_WARNING, "message timeout");
         return len;
       }
       return 0;
@@ -1441,13 +1441,13 @@ websocket_onMessage(void *socketUserData, void *socketConnectionDesc, void *conn
       return len;
 
     default:
-      ezwebsocket_log(EZLOG_ERROR, "unexpected return value\n");
+      ezwebsocket_log(EZLOG_WARNING, "unexpected return value\n");
       return len;
     }
     break;
 
   case WS_STATE_CLOSED:
-    ezwebsocket_log(EZLOG_ERROR, "websocket closed ignoring message\n");
+    ezwebsocket_log(EZLOG_WARNING, "websocket closed ignoring message\n");
     return len;
 
   default:
@@ -1523,7 +1523,7 @@ websocket_sendData(struct websocket_connection_desc *wsConnectionDesc, enum ws_d
     break;
 
   default:
-    ezwebsocket_log(EZLOG_ERROR, "unknown data type\n");
+    ezwebsocket_log(EZLOG_WARNING, "unknown data type\n");
     return -1;
   }
 
@@ -1562,7 +1562,7 @@ websocket_sendDataFragmentedStart(struct websocket_connection_desc *wsConnection
     break;
 
   default:
-    ezwebsocket_log(EZLOG_ERROR, "unknown data type\n");
+    ezwebsocket_log(EZLOG_WARNING, "unknown data type\n");
     return -1;
   }
 
@@ -1663,7 +1663,7 @@ websocketServer_open(struct websocket_server_init *wsInit, void *websocketUserDa
 
   wsDesc = refcnt_allocate(sizeof(struct websocket_server_desc), NULL);
   if (!wsDesc) {
-    ezwebsocket_log(EZLOG_ERROR, "refcnt_allocate failed\n");
+    ezwebsocket_log(EZLOG_WARNING, "refcnt_allocate failed\n");
     return NULL;
   }
   memset(wsDesc, 0, sizeof(struct websocket_server_desc));
@@ -1682,7 +1682,7 @@ websocketServer_open(struct websocket_server_init *wsInit, void *websocketUserDa
 
   wsDesc->socketDesc = socketServer_open(&socketInit, wsDesc);
   if (!wsDesc->socketDesc) {
-    ezwebsocket_log(EZLOG_ERROR, "socketServer_open failed\n");
+    ezwebsocket_log(EZLOG_WARNING, "socketServer_open failed\n");
     refcnt_unref(wsDesc);
     return NULL;
   }
@@ -1750,23 +1750,23 @@ websocketClient_open(struct websocket_client_init *wsInit, void *websocketUserDa
   wsConnection->socketClientDesc = NULL;
   wsConnection->wsDesc.wsClientDesc->address = strdup(wsInit->address);
   if (wsConnection->wsDesc.wsClientDesc->address == NULL) {
-    ezwebsocket_log(EZLOG_ERROR, "strdup failed\n");
+    ezwebsocket_log(EZLOG_WARNING, "strdup failed\n");
     goto ERROR;
   }
   wsConnection->wsDesc.wsClientDesc->port = strdup(wsInit->port);
   if (wsConnection->wsDesc.wsClientDesc->port == NULL) {
-    ezwebsocket_log(EZLOG_ERROR, "strdup failed\n");
+    ezwebsocket_log(EZLOG_WARNING, "strdup failed\n");
     goto ERROR;
   }
   wsConnection->wsDesc.wsClientDesc->endpoint = strdup(wsInit->endpoint);
   if (wsConnection->wsDesc.wsClientDesc->endpoint == NULL) {
-    ezwebsocket_log(EZLOG_ERROR, "strdup failed\n");
+    ezwebsocket_log(EZLOG_WARNING, "strdup failed\n");
     goto ERROR;
   }
 
   uint32_t tempPort = strtoul(wsInit->port, NULL, 10);
   if ((tempPort == 0) || (tempPort > USHRT_MAX)) {
-    ezwebsocket_log(EZLOG_ERROR, "port outside allowed range\n");
+    ezwebsocket_log(EZLOG_WARNING, "port outside allowed range\n");
     goto ERROR;
   }
 
@@ -1889,7 +1889,7 @@ websocket_open(struct websocket_init *wsInit, void *websocketUserData)
 
   wsDesc = refcnt_allocate(sizeof(struct websocket_server_desc), NULL);
   if (!wsDesc) {
-    ezwebsocket_log(EZLOG_ERROR, "refcnt_allocate failed\n");
+    ezwebsocket_log(EZLOG_WARNING, "refcnt_allocate failed\n");
     return NULL;
   }
   memset(wsDesc, 0, sizeof(struct websocket_server_desc));
@@ -1911,7 +1911,7 @@ websocket_open(struct websocket_init *wsInit, void *websocketUserData)
 
   wsDesc->socketDesc = socketServer_open(&socketInit, wsDesc);
   if (!wsDesc->socketDesc) {
-    ezwebsocket_log(EZLOG_ERROR, "socketServer_open failed\n");
+    ezwebsocket_log(EZLOG_WARNING, "socketServer_open failed\n");
     refcnt_unref(wsDesc);
     return NULL;
   }
