@@ -181,12 +181,18 @@ ezwebsocket_set_level(enum ezwebsocket_log_level level)
 int
 ezwebsocket_vlog(enum ezwebsocket_log_level log_level, const char *fmt, va_list ap)
 {
+  if (!log_handler)
+    return 0;
+
   return log_handler(log_level, fmt, ap);
 }
 
 int
 ezwebsocket_vlog_continue(enum ezwebsocket_log_level log_level, const char *fmt, va_list argp)
 {
+  if (!log_continue_handler)
+    return 0;
+
   return log_continue_handler(log_level, fmt, argp);
 }
 
