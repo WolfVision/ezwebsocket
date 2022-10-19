@@ -36,20 +36,37 @@ enum ezwebsocket_log_level {
   EZLOG_DEBUG,
 };
 
-typedef int (*ezwebsocket_log_func_t)(enum ezwebsocket_log_level log_level, const char *fmt,
-                                      va_list argp);
+typedef int (*ezwebsocket_log_cont_func_t)(enum ezwebsocket_log_level log_level, const char *fmt,
+                                           va_list argp);
+typedef int (*ezwebsocket_log_func_t)(enum ezwebsocket_log_level log_level, const char *name,
+                                      const char *fmt, va_list argp);
 
 void
-ezwebsocket_log_set_handler(ezwebsocket_log_func_t log, ezwebsocket_log_func_t cont);
+ezwebsocket_log_set_handler(ezwebsocket_log_func_t log, ezwebsocket_log_cont_func_t cont);
 void
 ezwebsocket_set_level(enum ezwebsocket_log_level level);
+
 int
-ezwebsocket_vlog(enum ezwebsocket_log_level log_level, const char *fmt, va_list ap);
+ezwebsocket_vlog_named(enum ezwebsocket_log_level log_level, const char *name, const char *fmt,
+                       va_list ap);
+
+#define ezwebsocket_vlog(log_level, FMT, AP)                                                       \
+  do {                                                                                             \
+    ezwebsocket_vlog_named(log_level, __func__, FMT, AP);                                          \
+  } while (0)
+
 int
 ezwebsocket_vlog_continue(enum ezwebsocket_log_level log_level, const char *fmt, va_list argp);
+
 int
-ezwebsocket_log(enum ezwebsocket_log_level log_level, const char *fmt, ...)
-  __attribute__((format(printf, 2, 3)));
+ezwebsocket_log_named(enum ezwebsocket_log_level log_level, const char *name, const char *fmt, ...)
+  __attribute__((format(printf, 3, 4)));
+
+#define ezwebsocket_log(log_level, FMT, ARGS...)                                                   \
+  do {                                                                                             \
+    ezwebsocket_log_named(log_level, __func__, FMT, ##ARGS);                                       \
+  } while (0)
+
 int
 ezwebsocket_log_continue(enum ezwebsocket_log_level log_level, const char *fmt, ...)
   __attribute__((format(printf, 2, 3)));
