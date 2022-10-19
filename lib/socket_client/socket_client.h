@@ -27,8 +27,8 @@
 #define SOCKET_CLIENT_SOCKET_CLIENT_H_
 
 #include "utils/dyn_buffer.h"
-#include <stddef.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 //! structure with data needed to create a socket client
 struct socket_client_init {
