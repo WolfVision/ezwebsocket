@@ -209,8 +209,8 @@ closeAllConnections(struct socket_server_desc *socketDesc)
   {
     listElement = socketDesc->list;
     while (listElement) {
-      listElement = listElement->next;
       socketServer_closeConnection(listElement->desc);
+      listElement = listElement->next;
     }
   }
   pthread_mutex_unlock(&socketDesc->listMutex);
