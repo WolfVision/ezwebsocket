@@ -367,6 +367,13 @@ socketClient_close(void *socketDescriptor)
     dynBuffer_delete(&socketDesc->buffer);
   }
 
+#ifdef HAVE_OPENSSL
+  if (socketDesc->ssl) {
+    SSL_free(socketDesc->ssl);
+    SSL_CTX_free(socketDesc->ssl_ctx);
+  }
+#endif
+
   if (socketDesc->socketFd != -1) {
     close(socketDesc->socketFd);
     socketDesc->socketFd = -1;
