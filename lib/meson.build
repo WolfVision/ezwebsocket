@@ -6,6 +6,7 @@ srcs_websocket = [
   'utils/ref_count.c',
   'utils/stringck.c',
   'utils/utf8.c',
+  'utils/host_resolve.c',
   'socket_client/socket_client.c',
   'socket_server/socket_server.c',
   'ezwebsocket.c',
