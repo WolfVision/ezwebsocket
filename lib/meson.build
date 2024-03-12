@@ -49,3 +49,4 @@ dep_libezwebsocket = declare_dependency(
 
 pkg.generate(libezwebsocket)
 
+subdir('tests')
