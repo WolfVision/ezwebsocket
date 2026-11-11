@@ -342,9 +342,16 @@ startConnection(int socketFd, struct socket_server_desc *socketDesc)
   struct sockaddr_in sock_addr = { 0 };
   socklen_t sock_addr_len = sizeof(sock_addr);
 
+  if (socketFd < 0 || socketFd >= FD_SETSIZE) {
+    if (socketFd >= 0)
+      close(socketFd);
+    return -1;
+  }
+
   desc = refcnt_allocate(sizeof(struct socket_connection_desc), NULL);
   if (!desc) {
     ezwebsocket_log(EZLOG_ERROR, "refcnt_allocate failed\n");
+    close(socketFd);
     return -1;
   }
 
@@ -376,6 +383,9 @@ startConnection(int socketFd, struct socket_server_desc *socketDesc)
 
   if (pthread_create(&desc->tid, NULL, connectionThread, desc) != 0) {
     ezwebsocket_log(EZLOG_ERROR, "pthread_create failed\n");
+    desc->state = SOCKET_SESSION_STATE_DISCONNECTED;
+    close(socketFd);
+    removeConnection(socketDesc, desc);
     refcnt_unref(desc);
     return -1;
   }
@@ -458,8 +468,10 @@ socketServerThread(void *sockDesc)
         // wait for connection requests
         socketChildFd = accept(socketDesc->socketFd, (struct sockaddr *) &connectionAddr,
                                &connectionAddrLen);
-        if (socketChildFd < 0)
+        if (socketChildFd < 0) {
           ezwebsocket_log(EZLOG_ERROR, "ERROR on accept\n");
+          continue;
+        }
 
         if (startConnection(socketChildFd, socketDesc) < 0)
           ezwebsocket_log(EZLOG_ERROR, "startConnection failed\n");
