@@ -524,11 +524,15 @@ parseWebsocketHeader(const unsigned char *data, size_t len, struct ws_header *he
 
   for (i = 0; i < lengthNumBytes; i++) {
     size_t byte = data[2 + i];
-    if (header->payloadLength > (MAX_WEBSOCKET_PAYLOAD_LENGTH - byte) / 256) {
+    if (byte > MAX_WEBSOCKET_PAYLOAD_LENGTH ||
+        header->payloadLength > (MAX_WEBSOCKET_PAYLOAD_LENGTH - byte) / 256) {
       return -2;
     }
     header->payloadLength = header->payloadLength * 256 + byte;
   }
+
+  if (header->payloadLength > MAX_WEBSOCKET_PAYLOAD_LENGTH)
+    return -2;
 
   ezwebsocket_log(EZLOG_DEBUG, "payloadlength:%zu\n", header->payloadLength);
 
