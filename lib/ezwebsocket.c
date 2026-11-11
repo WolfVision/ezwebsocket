@@ -1195,7 +1195,7 @@ websocketServer_onOpen(void *socketUserData, struct socket_connection_desc *sock
 }
 
 static bool
-websocketServer_onIdle(void *socketUserData, void *socketConnectionDesc, void *connectionUserData)
+websocket_onIdle(void *socketUserData, void *socketConnectionDesc, void *connectionUserData)
 {
   struct websocket_connection_desc *wsConnectionDesc = connectionUserData;
   struct timespec now;
@@ -1206,11 +1206,20 @@ websocketServer_onIdle(void *socketUserData, void *socketConnectionDesc, void *c
   if (!wsConnectionDesc)
     return true;
 
-  if (wsConnectionDesc->state != WS_STATE_HANDSHAKE)
-    return false;
-
   clock_gettime(CLOCK_MONOTONIC, &now);
-  return now.tv_sec - wsConnectionDesc->handshakeStartedAt.tv_sec >= HANDSHAKE_TIMEOUT_S;
+  if (wsConnectionDesc->state == WS_STATE_HANDSHAKE && wsConnectionDesc->wsType == WS_TYPE_SERVER)
+    return now.tv_sec - wsConnectionDesc->handshakeStartedAt.tv_sec >= HANDSHAKE_TIMEOUT_S;
+
+  if (wsConnectionDesc->timeout.tv_sec || wsConnectionDesc->timeout.tv_nsec) {
+    time_t elapsed = now.tv_sec - wsConnectionDesc->timeout.tv_sec;
+    if (elapsed > MESSAGE_TIMEOUT_S ||
+        (elapsed == MESSAGE_TIMEOUT_S && now.tv_nsec >= wsConnectionDesc->timeout.tv_nsec)) {
+      websocket_closeConnection(wsConnectionDesc, WS_CLOSE_CODE_POLICY_VIOLATION);
+      return true;
+    }
+  }
+
+  return false;
 }
 
 /**
@@ -1443,8 +1452,13 @@ websocket_onMessage(void *socketUserData, void *socketConnectionDesc, void *conn
 
     switch (parseMessage(wsConnectionDesc, msg, len, &wsHeader)) {
     case WS_MSG_STATE_NO_USER_DATA:
-      wsConnectionDesc->timeout.tv_nsec = 0;
-      wsConnectionDesc->timeout.tv_sec = 0;
+      if (wsConnectionDesc->lastMessage.firstReceived && !wsConnectionDesc->lastMessage.complete) {
+        if (wsConnectionDesc->timeout.tv_sec == 0 && wsConnectionDesc->timeout.tv_nsec == 0)
+          clock_gettime(CLOCK_MONOTONIC, &wsConnectionDesc->timeout);
+      } else {
+        wsConnectionDesc->timeout.tv_nsec = 0;
+        wsConnectionDesc->timeout.tv_sec = 0;
+      }
       return wsHeader.payloadLength + wsHeader.payloadStartOffset;
 
     case WS_MSG_STATE_USER_DATA:
@@ -1461,17 +1475,16 @@ websocket_onMessage(void *socketUserData, void *socketConnectionDesc, void *conn
 
     case WS_MSG_STATE_INCOMPLETE:
       clock_gettime(CLOCK_MONOTONIC, &now);
-      if (wsConnectionDesc->timeout.tv_sec == (wsConnectionDesc->timeout.tv_nsec == 0)) {
+      if (wsConnectionDesc->timeout.tv_sec == 0 && wsConnectionDesc->timeout.tv_nsec == 0) {
         wsConnectionDesc->timeout = now;
-      } else if (wsConnectionDesc->timeout.tv_sec > now.tv_sec + MESSAGE_TIMEOUT_S) {
-        free(wsConnectionDesc->lastMessage.data);
-        wsConnectionDesc->lastMessage.data = NULL;
-        wsConnectionDesc->lastMessage.len = 0;
-        wsConnectionDesc->lastMessage.complete = 0;
-        wsConnectionDesc->timeout.tv_sec = 0;
-        wsConnectionDesc->timeout.tv_nsec = 0;
-        ezwebsocket_log(EZLOG_ERROR, "message timeout");
-        return len;
+      } else {
+        time_t elapsed = now.tv_sec - wsConnectionDesc->timeout.tv_sec;
+        if (elapsed > MESSAGE_TIMEOUT_S ||
+            (elapsed == MESSAGE_TIMEOUT_S && now.tv_nsec >= wsConnectionDesc->timeout.tv_nsec)) {
+          ezwebsocket_log(EZLOG_ERROR, "message timeout\n");
+          websocket_closeConnection(wsConnectionDesc, WS_CLOSE_CODE_POLICY_VIOLATION);
+          return len;
+        }
       }
       return 0;
 
@@ -1725,7 +1738,7 @@ websocketServer_open(struct websocket_server_init *wsInit, void *websocketUserDa
   socketInit.port = wsInit->port;
   socketInit.socket_onOpen = websocketServer_onOpen;
   socketInit.socket_onClose = websocket_onClose;
-  socketInit.socket_onIdle = websocketServer_onIdle;
+  socketInit.socket_onIdle = websocket_onIdle;
   socketInit.socket_onMessage = websocket_onMessage;
 
   wsDesc->socketDesc = socketServer_open(&socketInit, wsDesc);
@@ -1827,6 +1840,7 @@ websocketClient_open(struct websocket_client_init *wsInit, void *websocketUserDa
   socketInit.address = wsInit->address;
   socketInit.socket_onOpen = websocketClient_onOpen;
   socketInit.socket_onClose = websocket_onClose;
+  socketInit.socket_onIdle = websocket_onIdle;
   socketInit.socket_onMessage = websocket_onMessage;
 
   wsConnection->socketClientDesc = socketClient_open(&socketInit, wsConnection);
@@ -1955,7 +1969,7 @@ websocket_open(struct websocket_init *wsInit, void *websocketUserData)
   socketInit.port = wsInit->port;
   socketInit.socket_onOpen = websocketServer_onOpen;
   socketInit.socket_onClose = websocket_onClose;
-  socketInit.socket_onIdle = websocketServer_onIdle;
+  socketInit.socket_onIdle = websocket_onIdle;
   socketInit.socket_onMessage = websocket_onMessage;
 
   wsDesc->socketDesc = socketServer_open(&socketInit, wsDesc);

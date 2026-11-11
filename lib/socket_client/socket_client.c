@@ -68,6 +68,8 @@ struct socket_client_desc {
   void *(*socket_onOpen)(void *socketUserData, void *socketDesc);
   //! callback function that gets called when the socket is closed
   void (*socket_onClose)(void *socketUserData, void *socketDesc, void *sessionData);
+  //! callback function that gets called when the socket has no data to process
+  bool (*socket_onIdle)(void *socketUserData, void *socketDesc, void *sessionData);
   //! Pointer to the socket user data
   void *socketUserData;
   //! the thread ID of the socket client thread
@@ -105,6 +107,7 @@ socketClientThread(void *socketDescriptor)
   struct socket_client_desc *socketDesc = socketDescriptor;
   fd_set readfds;
   int n;
+  int selectResult;
   size_t count;
   size_t bytesFree;
   bool first;
@@ -121,7 +124,12 @@ socketClientThread(void *socketDescriptor)
     tv.tv_usec = 300000;
     FD_ZERO(&readfds);
     FD_SET(socketDesc->socketFd, &readfds);
-    if (select(socketDesc->socketFd + 1, &readfds, NULL, NULL, &tv) > 0) {
+    selectResult = select(socketDesc->socketFd + 1, &readfds, NULL, NULL, &tv);
+    if (selectResult == 0 && socketDesc->socket_onIdle &&
+        socketDesc->socket_onIdle(socketDesc->socketUserData, socketDesc,
+                                  socketDesc->sessionData))
+      socketDesc->state = SOCKET_CLIENT_STATE_DISCONNECTED;
+    if (selectResult > 0) {
       if (FD_ISSET(socketDesc->socketFd, &readfds)) {
         first = true;
         do {
@@ -249,6 +257,7 @@ socketClient_open(struct socket_client_init *socketInit, void *socketUserData)
   socketDesc->socketUserData = socketUserData;
   socketDesc->socket_onOpen = socketInit->socket_onOpen;
   socketDesc->socket_onClose = socketInit->socket_onClose;
+  socketDesc->socket_onIdle = socketInit->socket_onIdle;
   socketDesc->socket_onMessage = socketInit->socket_onMessage;
   socketDesc->state = SOCKET_CLIENT_STATE_DISCONNECTED;
 
