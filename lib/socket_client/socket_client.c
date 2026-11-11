@@ -44,8 +44,10 @@
 #include <openssl/ssl.h>
 #endif /* HAVE_OPENSSL */
 
+#define DYNBUFFER_MAX_SIZE (MAX_WEBSOCKET_PAYLOAD_LENGTH + 14)
+
 //! the minimum buffer allocation size
-#define MIN_ALLOC_SIZE 2048
+#define MIN_ALLOC_SIZE     2048
 
 //! States of the socket client
 enum socket_client_state {
@@ -104,7 +106,6 @@ socketClientThread(void *socketDescriptor)
   fd_set readfds;
   int n;
   size_t count;
-  int increase;
   size_t bytesFree;
   bool first;
   struct timeval tv;
@@ -123,13 +124,16 @@ socketClientThread(void *socketDescriptor)
     if (select(socketDesc->socketFd + 1, &readfds, NULL, NULL, &tv) > 0) {
       if (FD_ISSET(socketDesc->socketFd, &readfds)) {
         first = true;
-        increase = 1;
         do {
           bytesFree = DYNBUFFER_BYTES_FREE(&socketDesc->buffer);
           if (DYNBUFFER_BYTES_FREE(&socketDesc->buffer) < MIN_ALLOC_SIZE) {
-            dynBuffer_increase_to(&(socketDesc->buffer), MIN_ALLOC_SIZE * increase);
+            size_t maxFree = DYNBUFFER_MAX_SIZE - DYNBUFFER_SIZE(&socketDesc->buffer);
+            size_t requested = maxFree < MIN_ALLOC_SIZE ? maxFree : MIN_ALLOC_SIZE;
+            if (!requested || dynBuffer_increase_to(&(socketDesc->buffer), requested) != 0) {
+              socketDesc->state = SOCKET_CLIENT_STATE_DISCONNECTED;
+              break;
+            }
             bytesFree = DYNBUFFER_BYTES_FREE(&socketDesc->buffer);
-            increase++;
           }
 #ifdef HAVE_OPENSSL
           if (socketDesc->ssl)
@@ -148,9 +152,7 @@ socketClientThread(void *socketDescriptor)
             DYNBUFFER_INCREASE_WRITE_POS((&(socketDesc->buffer)), n);
           else
             break;
-        } while (((size_t) n == bytesFree) && (socketDesc->state == SOCKET_CLIENT_STATE_CONNECTED));
 
-        if (socketDesc->state == SOCKET_CLIENT_STATE_CONNECTED) {
           do {
             count = socketDesc->socket_onMessage(socketDesc->socketUserData, socketDesc,
                                                  socketDesc->sessionData,
@@ -159,7 +161,10 @@ socketClientThread(void *socketDescriptor)
             dynBuffer_removeLeadingBytes(&(socketDesc->buffer), count);
           } while (count && DYNBUFFER_SIZE(&(socketDesc->buffer)) &&
                    (socketDesc->state == SOCKET_CLIENT_STATE_CONNECTED));
-        }
+
+          if (DYNBUFFER_SIZE(&socketDesc->buffer) >= DYNBUFFER_MAX_SIZE)
+            socketDesc->state = SOCKET_CLIENT_STATE_DISCONNECTED;
+        } while (((size_t) n == bytesFree) && (socketDesc->state == SOCKET_CLIENT_STATE_CONNECTED));
       }
     }
   }

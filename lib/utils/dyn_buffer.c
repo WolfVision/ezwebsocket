@@ -25,6 +25,7 @@
 #include "dyn_buffer.h"
 
 #include <ezwebsocket_log.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -54,6 +55,11 @@ dynBuffer_init(struct dyn_buffer *buffer)
 int
 dynBuffer_increase_to(struct dyn_buffer *buffer, size_t numFreeBytes)
 {
+  if (numFreeBytes > SIZE_MAX - buffer->used) {
+    ezwebsocket_log(EZLOG_ERROR, "buffer size overflow\n");
+    return -1;
+  }
+
   if (buffer->buffer == NULL) {
     buffer->buffer = malloc(numFreeBytes);
     if (!buffer->buffer) {

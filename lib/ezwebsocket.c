@@ -396,7 +396,7 @@ EXIT:
 }
 
 // Frame format of a websocket:
-//​​
+// ​​
 //      0                   1                   2                   3
 //      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
 //     +-+-+-+-+-------+-+-------------+-------------------------------+
@@ -442,7 +442,8 @@ struct ws_header {
  * \param *header Pointer to the header
  *
  */
-static void __attribute__((unused)) printWsHeader(const struct ws_header *header)
+static void __attribute__((unused))
+printWsHeader(const struct ws_header *header)
 {
   ezwebsocket_log(EZLOG_DEBUG, "----ws header----\n");
   ezwebsocket_log_continue(EZLOG_DEBUG, "opcode:%d\n", header->opcode);
@@ -465,6 +466,10 @@ static void __attribute__((unused)) printWsHeader(const struct ws_header *header
 static int
 parseWebsocketHeader(const unsigned char *data, size_t len, struct ws_header *header)
 {
+  if (len < 2) {
+    return 0;
+  }
+
   header->fin = (data[0] & 0x80) ? true : false;
   header->opcode = data[0] & 0x0F;
   if (data[0] & 0x70) // reserved bits must be 0
@@ -489,10 +494,6 @@ parseWebsocketHeader(const unsigned char *data, size_t len, struct ws_header *he
   header->masked = (data[1] & 0x80) ? true : false;
   size_t i, lengthNumBytes;
 
-  if (len < 2) {
-    return 0;
-  }
-
   header->payloadLength = 0;
 
   // decode payload length
@@ -513,8 +514,11 @@ parseWebsocketHeader(const unsigned char *data, size_t len, struct ws_header *he
   }
 
   for (i = 0; i < lengthNumBytes; i++) {
-    header->payloadLength <<= 8;
-    header->payloadLength |= data[2 + i];
+    size_t byte = data[2 + i];
+    if (header->payloadLength > (MAX_WEBSOCKET_PAYLOAD_LENGTH - byte) / 256) {
+      return -2;
+    }
+    header->payloadLength = header->payloadLength * 256 + byte;
   }
 
   ezwebsocket_log(EZLOG_DEBUG, "payloadlength:%zu\n", header->payloadLength);
@@ -745,6 +749,11 @@ handleFirstMessage(struct websocket_connection_desc *wsConnectionDesc, const uns
 
   if (header->payloadLength) // it's allowed to send frames with payload length = 0
   {
+    if (header->payloadLength > MAX_WEBSOCKET_PAYLOAD_LENGTH) {
+      websocket_closeConnection(wsConnectionDesc, WS_CLOSE_CODE_MSG_TO_BIG);
+      return WS_MSG_STATE_ERROR;
+    }
+
     if (header->fin)
       wsConnectionDesc->lastMessage.data = refcnt_allocate(header->payloadLength, NULL);
     else
@@ -808,6 +817,12 @@ handleContMessage(struct websocket_connection_desc *wsConnectionDesc, const unsi
   if (!wsConnectionDesc->lastMessage.firstReceived) {
     ezwebsocket_log(EZLOG_ERROR, "missing last message closing connection\n");
     websocket_closeConnection(wsConnectionDesc, WS_CLOSE_CODE_PROTOCOL_ERROR);
+    return WS_MSG_STATE_ERROR;
+  }
+
+  if (wsConnectionDesc->lastMessage.len > MAX_WEBSOCKET_PAYLOAD_LENGTH ||
+      header->payloadLength > MAX_WEBSOCKET_PAYLOAD_LENGTH - wsConnectionDesc->lastMessage.len) {
+    websocket_closeConnection(wsConnectionDesc, WS_CLOSE_CODE_MSG_TO_BIG);
     return WS_MSG_STATE_ERROR;
   }
 
@@ -1081,7 +1096,7 @@ parseMessage(struct websocket_connection_desc *wsConnectionDesc, const unsigned 
   ezwebsocket_log(EZLOG_DEBUG, "->len:%zu opcode: %d == %s\n", len, header->opcode,
                   opcode2str(header->opcode));
 
-  if (len < header->payloadStartOffset + header->payloadLength)
+  if (header->payloadStartOffset > len || header->payloadLength > len - header->payloadStartOffset)
     return WS_MSG_STATE_INCOMPLETE;
 
   switch (header->opcode) {
@@ -1380,6 +1395,10 @@ websocket_onMessage(void *socketUserData, void *socketConnectionDesc, void *conn
 
   case WS_STATE_CONNECTED:
     switch (parseWebsocketHeader(msg, len, &wsHeader)) {
+    case -2:
+      websocket_closeConnection(wsConnectionDesc, WS_CLOSE_CODE_MSG_TO_BIG);
+      return len;
+
     case -1:
       ezwebsocket_log(EZLOG_ERROR, "couldn't parse header\n");
       websocket_closeConnection(wsConnectionDesc, WS_CLOSE_CODE_PROTOCOL_ERROR);

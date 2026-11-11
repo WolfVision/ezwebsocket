@@ -27,6 +27,10 @@
 
 #include <stddef.h>
 
+#ifndef MAX_WEBSOCKET_PAYLOAD_LENGTH
+#define MAX_WEBSOCKET_PAYLOAD_LENGTH (4 * 1024 * 1024)
+#endif
+
 //! structure that contains all necessary information of the dynamic buffer
 struct dyn_buffer {
   //! pointer to the buffer that holds the data

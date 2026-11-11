@@ -40,8 +40,10 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#define DYNBUFFER_MAX_SIZE (MAX_WEBSOCKET_PAYLOAD_LENGTH + 14)
+
 //! starting size of the message buffer (will be increased everytime the buffer is to small)
-#define READ_SIZE 1024
+#define READ_SIZE          1024
 
 //! States of the socket connection
 enum socket_connection_state {
@@ -230,7 +232,6 @@ connectionThread(void *params)
   fd_set readfds;
   int n;
   size_t count;
-  int increase;
   size_t bytesFree;
   bool first;
   struct timeval tv;
@@ -251,13 +252,16 @@ connectionThread(void *params)
     if (select(connectionDesc->connectionSocketFd + 1, &readfds, NULL, NULL, &tv) > 0) {
       if (FD_ISSET(connectionDesc->connectionSocketFd, &readfds)) {
         first = true;
-        increase = 1;
         do {
           bytesFree = DYNBUFFER_BYTES_FREE(&connectionDesc->buffer);
           if (DYNBUFFER_BYTES_FREE(&connectionDesc->buffer) < READ_SIZE) {
-            dynBuffer_increase_to(&(connectionDesc->buffer), READ_SIZE * increase);
+            size_t maxFree = DYNBUFFER_MAX_SIZE - DYNBUFFER_SIZE(&connectionDesc->buffer);
+            size_t requested = maxFree < READ_SIZE ? maxFree : READ_SIZE;
+            if (!requested || dynBuffer_increase_to(&(connectionDesc->buffer), requested) != 0) {
+              connectionDesc->state = SOCKET_SESSION_STATE_DISCONNECTED;
+              break;
+            }
             bytesFree = DYNBUFFER_BYTES_FREE(&connectionDesc->buffer);
-            increase++;
           }
           n = recv(connectionDesc->connectionSocketFd,
                    DYNBUFFER_WRITE_POS(&(connectionDesc->buffer)), bytesFree, MSG_DONTWAIT);
@@ -271,10 +275,7 @@ connectionThread(void *params)
             DYNBUFFER_INCREASE_WRITE_POS((&(connectionDesc->buffer)), n);
           else
             break;
-        } while (((size_t) n == bytesFree) &&
-                 (connectionDesc->state == SOCKET_SESSION_STATE_CONNECTED));
 
-        if (connectionDesc->state == SOCKET_SESSION_STATE_CONNECTED) {
           do {
             count = connectionDesc->socketDesc
                       ->socket_onMessage(connectionDesc->socketDesc->socketUserData, connectionDesc,
@@ -284,7 +285,11 @@ connectionThread(void *params)
             dynBuffer_removeLeadingBytes(&(connectionDesc->buffer), count);
           } while (count && DYNBUFFER_SIZE(&(connectionDesc->buffer)) &&
                    (connectionDesc->state == SOCKET_SESSION_STATE_CONNECTED));
-        }
+
+          if (DYNBUFFER_SIZE(&connectionDesc->buffer) >= DYNBUFFER_MAX_SIZE)
+            connectionDesc->state = SOCKET_SESSION_STATE_DISCONNECTED;
+        } while (((size_t) n == bytesFree) &&
+                 (connectionDesc->state == SOCKET_SESSION_STATE_CONNECTED));
       }
     }
   }
