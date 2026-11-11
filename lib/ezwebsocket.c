@@ -37,6 +37,7 @@
 #include <limits.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -581,7 +582,7 @@ createWebsocketHeader(unsigned char *buffer, enum ws_opcode opcode, bool fin, bo
     cnt = 2;
 
     for (i = 7; i > -1; i--) {
-      buffer[cnt] = (len >> (i * 8)) & 0xFF;
+      buffer[cnt] = ((uint64_t) len >> (i * 8)) & 0xFF;
       cnt++;
     }
   }
@@ -654,11 +655,19 @@ sendDataLowLevel(struct websocket_connection_desc *wsConnectionDesc, enum ws_opc
   if (wsConnectionDesc->state == WS_STATE_CLOSED)
     return -1;
 
+  if (len > MAX_WEBSOCKET_PAYLOAD_LENGTH) {
+    ezwebsocket_log(EZLOG_ERROR, "outgoing message exceeds configured maximum\n");
+    return -1;
+  }
+
   if (masked) {
     mask = (rand() << 16) | (rand() & 0x0000FFFF);
   }
 
   headerLength = createWebsocketHeader(header, opcode, fin, masked, mask, len);
+
+  if (len > SIZE_MAX - (size_t) headerLength)
+    return -1;
 
   sendBuffer = malloc(headerLength + len);
   if (!sendBuffer)
