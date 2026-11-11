@@ -221,7 +221,7 @@ static int
 parseHttpHeader(const char *wsHeader, size_t len, char *key)
 {
   const char *cpnt;
-  int i;
+  size_t i;
 
   cpnt = strnstr((char *) wsHeader, WS_HS_KEY_ID, len);
   if (!cpnt) {
@@ -231,11 +231,15 @@ parseHttpHeader(const char *wsHeader, size_t len, char *key)
 
   cpnt += strlen(WS_HS_KEY_ID);
 
-  while (!isgraph(*cpnt)) {
+  while ((size_t) (cpnt - wsHeader) < len && !isgraph((unsigned char) *cpnt)) {
     cpnt++;
   }
 
-  for (i = 0; (i < WS_HS_KEY_LEN - 1) && isgraph(cpnt[i]) && ((size_t) (&cpnt[i] - wsHeader) < len);
+  if ((size_t) (cpnt - wsHeader) >= len)
+    return -1;
+
+  for (i = 0; i < WS_HS_KEY_LEN - 1 && i < len - (size_t) (cpnt - wsHeader) &&
+              isgraph((unsigned char) cpnt[i]);
        i++) {
     key[i] = cpnt[i];
   }
@@ -315,14 +319,15 @@ checkWsHandshakeReply(struct websocket_connection_desc *wsConnectionDesc, char *
 
   cpnt += strlen(WS_HS_REPLY_ID);
 
-  while (!isgraph(*cpnt)) {
+  while ((size_t) (cpnt - header) < *len && !isgraph((unsigned char) *cpnt)) {
     cpnt++;
-
-    if ((size_t) (cpnt - header) >= *len)
-      return false;
   }
 
-  for (i = 0; (i < sizeof(key) - 1) && isgraph(cpnt[i]) && ((size_t) (&cpnt[i] - header) < *len);
+  if ((size_t) (cpnt - header) >= *len)
+    return false;
+
+  for (i = 0; i < sizeof(key) - 1 && i < *len - (size_t) (cpnt - header) &&
+              isgraph((unsigned char) cpnt[i]);
        i++) {
     key[i] = cpnt[i];
   }
