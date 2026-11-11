@@ -1185,8 +1185,14 @@ websocketServer_onOpen(void *socketUserData, struct socket_connection_desc *sock
     return NULL;
   }
 
-  refcnt_ref(socketConnectionDesc);
   wsConnectionDesc = refcnt_allocate(sizeof(struct websocket_connection_desc), NULL);
+  if (!wsConnectionDesc) {
+    ezwebsocket_log(EZLOG_ERROR, "refcnt_allocate failed\n");
+    socketServer_closeConnection(socketConnectionDesc);
+    return NULL;
+  }
+
+  refcnt_ref(socketConnectionDesc);
   memset(wsConnectionDesc, 0, sizeof(struct websocket_connection_desc));
   wsConnectionDesc->wsType = WS_TYPE_SERVER;
   wsConnectionDesc->socketClientDesc = socketConnectionDesc;
