@@ -25,6 +25,7 @@
 #ifndef SOCKET_SERVER_H_
 #define SOCKET_SERVER_H_
 
+#include <stdbool.h>
 #include <stddef.h>
 
 //! prototype for the socket connection descriptor
@@ -41,6 +42,8 @@ struct socket_server_init {
   void *(*socket_onOpen)(void *socketUserData, struct socket_connection_desc *connectionDesc);
   //! callback that is called when a connection is closed
   void (*socket_onClose)(void *socketUserData, void *connectionDesc, void *connectionUserData);
+  //! callback that is called when the connection has no data to process
+  bool (*socket_onIdle)(void *socketUserData, void *connectionDesc, void *connectionUserData);
   //! the listening port as string
   const char *port;
   //! the listening address as string

@@ -52,6 +52,7 @@
 #endif
 //! timeout for fragmented messages
 #define MESSAGE_TIMEOUT_S             30
+#define HANDSHAKE_TIMEOUT_S           10
 
 //! if payload length in the websocket header is smaller or equal than this
 //! the extended payload is not used
@@ -131,6 +132,8 @@ struct websocket_connection_desc {
   void *connectionUserData;
   //! stores the time for message timeouts
   struct timespec timeout;
+  //! stores when the server-side handshake started
+  struct timespec handshakeStartedAt;
   //! union for either client or server descriptor
   union {
     //! pointer to the websocket client descriptor (in case of client mode)
@@ -1174,6 +1177,7 @@ websocketServer_onOpen(void *socketUserData, struct socket_connection_desc *sock
   wsConnectionDesc->wsType = WS_TYPE_SERVER;
   wsConnectionDesc->socketClientDesc = socketConnectionDesc;
   wsConnectionDesc->state = WS_STATE_HANDSHAKE;
+  clock_gettime(CLOCK_MONOTONIC, &wsConnectionDesc->handshakeStartedAt);
   wsConnectionDesc->timeout.tv_nsec = 0;
   wsConnectionDesc->timeout.tv_sec = 0;
   wsConnectionDesc->lastMessage.firstReceived = false;
@@ -1183,6 +1187,25 @@ websocketServer_onOpen(void *socketUserData, struct socket_connection_desc *sock
   wsConnectionDesc->wsDesc.wsServerDesc = wsDesc;
 
   return wsConnectionDesc;
+}
+
+static bool
+websocketServer_onIdle(void *socketUserData, void *socketConnectionDesc, void *connectionUserData)
+{
+  struct websocket_connection_desc *wsConnectionDesc = connectionUserData;
+  struct timespec now;
+
+  (void) socketUserData;
+  (void) socketConnectionDesc;
+
+  if (!wsConnectionDesc)
+    return true;
+
+  if (wsConnectionDesc->state != WS_STATE_HANDSHAKE)
+    return false;
+
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  return now.tv_sec - wsConnectionDesc->handshakeStartedAt.tv_sec >= HANDSHAKE_TIMEOUT_S;
 }
 
 /**
@@ -1697,6 +1720,7 @@ websocketServer_open(struct websocket_server_init *wsInit, void *websocketUserDa
   socketInit.port = wsInit->port;
   socketInit.socket_onOpen = websocketServer_onOpen;
   socketInit.socket_onClose = websocket_onClose;
+  socketInit.socket_onIdle = websocketServer_onIdle;
   socketInit.socket_onMessage = websocket_onMessage;
 
   wsDesc->socketDesc = socketServer_open(&socketInit, wsDesc);
@@ -1926,6 +1950,7 @@ websocket_open(struct websocket_init *wsInit, void *websocketUserData)
   socketInit.port = wsInit->port;
   socketInit.socket_onOpen = websocketServer_onOpen;
   socketInit.socket_onClose = websocket_onClose;
+  socketInit.socket_onIdle = websocketServer_onIdle;
   socketInit.socket_onMessage = websocket_onMessage;
 
   wsDesc->socketDesc = socketServer_open(&socketInit, wsDesc);

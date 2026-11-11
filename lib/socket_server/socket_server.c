@@ -41,6 +41,7 @@
 #include <unistd.h>
 
 #define DYNBUFFER_MAX_SIZE (MAX_WEBSOCKET_PAYLOAD_LENGTH + 14)
+#define MAX_SERVER_CONNECTIONS 128
 
 //! starting size of the message buffer (will be increased everytime the buffer is to small)
 #define READ_SIZE          1024
@@ -106,6 +107,8 @@ struct socket_server_desc {
   void *(*socket_onOpen)(void *socketUserData, struct socket_connection_desc *connectionDesc);
   //! function that should be called when a connection is closed
   void (*socket_onClose)(void *socketUserData, void *connectionDesc, void *connectionUserData);
+  //! function that should be called when a connection has no data to process
+  bool (*socket_onIdle)(void *socketUserData, void *connectionDesc, void *connectionUserData);
   //! user data for the server socket
   void *socketUserData;
   //! file descriptor of the socket
@@ -139,11 +142,16 @@ addConnection(struct socket_server_desc *socketDesc, struct socket_connection_de
     return -1;
   }
 
-  refcnt_ref(desc);
-  listElement->desc = desc;
-
   pthread_mutex_lock(&socketDesc->listMutex);
   {
+    if (socketDesc->numConnections >= MAX_SERVER_CONNECTIONS) {
+      pthread_mutex_unlock(&socketDesc->listMutex);
+      free(listElement);
+      return -1;
+    }
+
+    refcnt_ref(desc);
+    listElement->desc = desc;
     if (!socketDesc->list) {
       listElement->next = NULL;
       socketDesc->list = listElement;
@@ -231,6 +239,7 @@ connectionThread(void *params)
   struct socket_connection_desc *connectionDesc = params;
   fd_set readfds;
   int n;
+  int selectResult;
   size_t count;
   size_t bytesFree;
   bool first;
@@ -249,7 +258,14 @@ connectionThread(void *params)
     tv.tv_usec = 300000;
     FD_ZERO(&readfds);
     FD_SET(connectionDesc->connectionSocketFd, &readfds);
-    if (select(connectionDesc->connectionSocketFd + 1, &readfds, NULL, NULL, &tv) > 0) {
+    selectResult = select(connectionDesc->connectionSocketFd + 1, &readfds, NULL, NULL, &tv);
+    if (selectResult == 0 && connectionDesc->socketDesc->socket_onIdle &&
+        connectionDesc->socketDesc->socket_onIdle(
+          connectionDesc->socketDesc->socketUserData, connectionDesc,
+          connectionDesc->connectionUserData)) {
+      connectionDesc->state = SOCKET_SESSION_STATE_DISCONNECTED;
+    }
+    if (selectResult > 0) {
       if (FD_ISSET(connectionDesc->connectionSocketFd, &readfds)) {
         first = true;
         do {
@@ -351,7 +367,11 @@ startConnection(int socketFd, struct socket_server_desc *socketDesc)
   dynBuffer_init(&(desc->buffer));
   desc->connectionUserData = NULL;
 
-  addConnection(socketDesc, desc);
+  if (addConnection(socketDesc, desc) != 0) {
+    close(socketFd);
+    refcnt_unref(desc);
+    return -1;
+  }
   desc->state = SOCKET_SESSION_STATE_CONNECTED;
 
   if (pthread_create(&desc->tid, NULL, connectionThread, desc) != 0) {
@@ -482,6 +502,7 @@ socketServer_open(struct socket_server_init *socketInit, void *socketUserData)
 
   socketDesc->socket_onClose = socketInit->socket_onClose;
   socketDesc->socket_onOpen = socketInit->socket_onOpen;
+  socketDesc->socket_onIdle = socketInit->socket_onIdle;
   socketDesc->socket_onMessage = socketInit->socket_onMessage;
   socketDesc->socketUserData = socketUserData;
   socketDesc->list = NULL;
