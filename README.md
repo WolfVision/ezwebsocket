@@ -20,6 +20,14 @@ Simple Websocket Library that supports server and client written in C
 * $> ninja
 * $> sudo ninja install
 
+# Build with Docker
+
+Build the library and examples in a Debian-based container with OpenSSL enabled:
+
+* $> docker build -t ezwebsocket-builder .
+
+The maximum incoming frame and message payload defaults to 4 MiB. Override it with `-Dmax_websocket_payload_length=<bytes>` when configuring Meson; the accepted range is 1 byte to 1 GiB.
+
 # Websocket server example
 
 compile with:
