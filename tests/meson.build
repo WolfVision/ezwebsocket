@@ -18,6 +18,6 @@ function_test = executable(
   'function_test',
   'function_test.c',
   c_args: test_c_args,
-  dependencies: [dep_libezwebsocket, dep_ssl],
+  dependencies: [dep_libezwebsocket, dep_ssl, dep_threads],
 )
 test('function', function_test, timeout: 90)

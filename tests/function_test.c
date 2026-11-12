@@ -4,8 +4,8 @@
 
 #include "base64.h"
 
-#include <ezwebsocket.h>
 #include <config.h>
+#include <ezwebsocket.h>
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -16,8 +16,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/resource.h>
-#include <sys/socket.h>
 #include <sys/select.h>
+#include <sys/socket.h>
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
@@ -31,6 +31,23 @@
 #define MAX_WEBSOCKET_PAYLOAD_LENGTH (4 * 1024 * 1024)
 #endif
 
+#if MAX_WEBSOCKET_PAYLOAD_LENGTH >= 15
+#define TEST_ECHO_MESSAGE            "loopback echo"
+#define TEST_FRAGMENT_START          "fragmented "
+#define TEST_FRAGMENT_CONTINUATION   "echo"
+#define TEST_FRAGMENTED_MESSAGE      "fragmented echo"
+#define TEST_FRAGMENTED_ECHO_ENABLED 1
+#elif MAX_WEBSOCKET_PAYLOAD_LENGTH >= 2
+#define TEST_ECHO_MESSAGE            "x"
+#define TEST_FRAGMENT_START          "a"
+#define TEST_FRAGMENT_CONTINUATION   "b"
+#define TEST_FRAGMENTED_MESSAGE      "ab"
+#define TEST_FRAGMENTED_ECHO_ENABLED 1
+#else
+#define TEST_ECHO_MESSAGE            "x"
+#define TEST_FRAGMENTED_ECHO_ENABLED 0
+#endif
+
 struct function_state {
   pthread_mutex_t mutex;
   pthread_cond_t condition;
@@ -40,6 +57,7 @@ struct function_state {
   bool echoes_succeeded;
   bool client_closed;
   bool client_close_callback_saw_closed_state;
+  bool client_unref_in_close;
   bool slow_send_mode;
   bool slow_send_finished;
   int slow_send_result;
@@ -101,13 +119,18 @@ client_on_close(void *websocket_user_data, struct websocket_connection_desc *con
                 void *connection_user_data)
 {
   struct function_state *state = websocket_user_data;
+  bool unref_in_close;
 
   (void) connection_user_data;
   pthread_mutex_lock(&state->mutex);
   state->client_closed = true;
   state->client_close_callback_saw_closed_state = !websocketConnection_isConnected(connection);
+  unref_in_close = state->client_unref_in_close;
   pthread_cond_broadcast(&state->condition);
   pthread_mutex_unlock(&state->mutex);
+
+  if (unref_in_close)
+    websocket_unref(connection);
 }
 
 static void
@@ -115,8 +138,10 @@ client_on_message(void *websocket_user_data, struct websocket_connection_desc *c
                   void *connection_user_data, enum ws_data_type data_type, void *message,
                   size_t length)
 {
-  static const char expected[] = "loopback echo";
-  static const char fragmented_expected[] = "fragmented echo";
+  static const char expected[] = TEST_ECHO_MESSAGE;
+#if TEST_FRAGMENTED_ECHO_ENABLED
+  static const char fragmented_expected[] = TEST_FRAGMENTED_MESSAGE;
+#endif
   struct function_state *state = websocket_user_data;
   bool message_matches;
 
@@ -127,12 +152,14 @@ client_on_message(void *websocket_user_data, struct websocket_connection_desc *c
   if (state->messages_received == 0) {
     message_matches = data_type == WS_DATA_TYPE_TEXT && length == sizeof(expected) - 1 &&
                       memcmp(message, expected, sizeof(expected) - 1) == 0;
-  } else if (state->messages_received == 1) {
-    message_matches = data_type == WS_DATA_TYPE_TEXT &&
-                      length == sizeof(fragmented_expected) - 1 &&
-                      memcmp(message, fragmented_expected, sizeof(fragmented_expected) - 1) ==
-                        0;
-  } else {
+  }
+#if TEST_FRAGMENTED_ECHO_ENABLED
+  else if (state->messages_received == 1) {
+    message_matches = data_type == WS_DATA_TYPE_TEXT && length == sizeof(fragmented_expected) - 1 &&
+                      memcmp(message, fragmented_expected, sizeof(fragmented_expected) - 1) == 0;
+  }
+#endif
+  else {
     message_matches = false;
   }
   state->messages_match = state->messages_match && message_matches;
@@ -241,6 +268,8 @@ struct mock_handshake_response {
   int listen_fd;
   const char *status;
   bool include_upgrade_headers;
+  bool split_list_headers;
+  bool wait_for_client_close;
   int result;
 };
 
@@ -256,12 +285,13 @@ mock_handshake_server(void *argument)
   char response_header[512];
   char *key;
   char *accept_key;
+  char close_data[128];
   size_t request_length = 0;
   unsigned char digest[21];
   int connection_fd;
 
   connection_fd = accept(response->listen_fd, (struct sockaddr *) &peer_address,
-                          &peer_address_length);
+                         &peer_address_length);
   if (connection_fd < 0)
     return NULL;
 
@@ -299,16 +329,28 @@ mock_handshake_server(void *argument)
     goto cleanup;
 
   if (response->include_upgrade_headers) {
-    snprintf(response_header, sizeof(response_header),
-             "%s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
-             "Sec-WebSocket-Accept: %s\r\n\r\n",
-             response->status, accept_key);
+    if (response->split_list_headers) {
+      snprintf(response_header, sizeof(response_header),
+               "%s\r\nUpgrade: h2c\r\nUpgrade: websocket\r\n"
+               "Connection: keep-alive\r\nConnection: Upgrade\r\n"
+               "Sec-WebSocket-Accept: %s\r\n\r\n",
+               response->status, accept_key);
+    } else {
+      snprintf(response_header, sizeof(response_header),
+               "%s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+               "Sec-WebSocket-Accept: %s\r\n\r\n",
+               response->status, accept_key);
+    }
   } else {
     snprintf(response_header, sizeof(response_header), "%s\r\nSec-WebSocket-Accept: %s\r\n\r\n",
              response->status, accept_key);
   }
   free(accept_key);
   response->result = send_all(connection_fd, response_header, strlen(response_header));
+  if (response->result == 0 && response->wait_for_client_close) {
+    while (recv(connection_fd, close_data, sizeof(close_data), 0) > 0) {
+    }
+  }
 
 cleanup:
   close(connection_fd);
@@ -316,7 +358,8 @@ cleanup:
 }
 
 static int
-test_client_rejects_bad_handshake_response(const char *status, bool include_upgrade_headers)
+test_client_handshake_response(const char *status, bool include_upgrade_headers,
+                               bool split_list_headers, bool expect_accept)
 {
   struct mock_handshake_response response = { 0 };
   struct websocket_client_init client_init = { 0 };
@@ -325,6 +368,7 @@ test_client_rejects_bad_handshake_response(const char *status, bool include_upgr
   socklen_t address_length = sizeof(address);
   pthread_t server_thread;
   char port[6];
+  bool accepted;
 
   response.listen_fd = socket(AF_INET, SOCK_STREAM, 0);
   if (response.listen_fd < 0)
@@ -343,6 +387,8 @@ test_client_rejects_bad_handshake_response(const char *status, bool include_upgr
 
   response.status = status;
   response.include_upgrade_headers = include_upgrade_headers;
+  response.split_list_headers = split_list_headers;
+  response.wait_for_client_close = expect_accept;
   response.result = -1;
   if (pthread_create(&server_thread, NULL, mock_handshake_server, &response) != 0) {
     close(response.listen_fd);
@@ -353,20 +399,22 @@ test_client_rejects_bad_handshake_response(const char *status, bool include_upgr
   client_init.port = port;
   client_init.endpoint = "/";
   client = websocketClient_open(&client_init, NULL);
+  accepted = client != NULL;
   if (client != NULL)
     websocketClient_close(client, WS_CLOSE_CODE_NORMAL);
 
   pthread_join(server_thread, NULL);
   close(response.listen_fd);
-  return client == NULL && response.result == 0 ? 0 : -1;
+  return accepted == expect_accept && response.result == 0 ? 0 : -1;
 }
 
 static int
 test_client_handshake_response_validation(void)
 {
-  if (test_client_rejects_bad_handshake_response("HTTP/1.1 200 OK", true) != 0 ||
-      test_client_rejects_bad_handshake_response("HTTP/1.1 101 Switching Protocols", false) !=
-        0)
+  if (test_client_handshake_response("HTTP/1.1 200 OK", true, false, false) != 0 ||
+      test_client_handshake_response("HTTP/1.1 101 Switching Protocols", false, false, false) !=
+        0 ||
+      test_client_handshake_response("HTTP/1.1 101 Switching Protocols", true, true, true) != 0)
     return -1;
   return 0;
 }
@@ -460,54 +508,50 @@ test_handshake_response(const char *port, const char *request, const char *statu
 static int
 test_http_handshake_validation(const char *port)
 {
-  static const char invalid_method[] =
-    "POST / HTTP/1.1\r\n"
-    "Host: 127.0.0.1\r\n"
-    "Upgrade: websocket\r\n"
-    "Connection: Upgrade\r\n"
-    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-    "Sec-WebSocket-Version: 13\r\n\r\n";
-  static const char missing_upgrade[] =
-    "GET / HTTP/1.1\r\n"
-    "Host: 127.0.0.1\r\n"
-    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-    "Sec-WebSocket-Version: 13\r\n\r\n";
-  static const char wrong_version[] =
-    "GET / HTTP/1.1\r\n"
-    "Host: 127.0.0.1\r\n"
-    "Upgrade: websocket\r\n"
-    "Connection: Upgrade\r\n"
-    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-    "Sec-WebSocket-Version: 12\r\n\r\n";
-  static const char blank_key[] =
-    "GET / HTTP/1.1\r\n"
-    "Host: 127.0.0.1\r\n"
-    "Upgrade: websocket\r\n"
-    "Connection: Upgrade\r\n"
-    "Sec-WebSocket-Key: \r\n"
-    "Sec-WebSocket-Version: 13\r\n\r\n";
-  static const char partial_key[] =
-    "GET / HTTP/1.1\r\n"
-    "Host: 127.0.0.1\r\n"
-    "Upgrade: websocket\r\n"
-    "Connection: Upgrade\r\n"
-    "Sec-WebSocket-K\r\n\r\n";
-  static const char lower_case_split[] =
-    "GET / HTTP/1.1\r\n"
-    "host: 127.0.0.1\r\n"
-    "upgrade: WebSocket\r\n"
-    "connection: keep-alive, Upgrade\r\n"
-    "sec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-    "sec-websocket-version: 13\r\n\r\n";
+  static const char invalid_method[] = "POST / HTTP/1.1\r\n"
+                                       "Host: 127.0.0.1\r\n"
+                                       "Upgrade: websocket\r\n"
+                                       "Connection: Upgrade\r\n"
+                                       "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                                       "Sec-WebSocket-Version: 13\r\n\r\n";
+  static const char missing_upgrade[] = "GET / HTTP/1.1\r\n"
+                                        "Host: 127.0.0.1\r\n"
+                                        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                                        "Sec-WebSocket-Version: 13\r\n\r\n";
+  static const char wrong_version[] = "GET / HTTP/1.1\r\n"
+                                      "Host: 127.0.0.1\r\n"
+                                      "Upgrade: websocket\r\n"
+                                      "Connection: Upgrade\r\n"
+                                      "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                                      "Sec-WebSocket-Version: 12\r\n\r\n";
+  static const char blank_key[] = "GET / HTTP/1.1\r\n"
+                                  "Host: 127.0.0.1\r\n"
+                                  "Upgrade: websocket\r\n"
+                                  "Connection: Upgrade\r\n"
+                                  "Sec-WebSocket-Key: \r\n"
+                                  "Sec-WebSocket-Version: 13\r\n\r\n";
+  static const char partial_key[] = "GET / HTTP/1.1\r\n"
+                                    "Host: 127.0.0.1\r\n"
+                                    "Upgrade: websocket\r\n"
+                                    "Connection: Upgrade\r\n"
+                                    "Sec-WebSocket-K\r\n\r\n";
+  static const char lower_case_split[] = "GET / HTTP/1.1\r\n"
+                                         "host: 127.0.0.1\r\n"
+                                         "upgrade: h2c\r\n"
+                                         "upgrade: WebSocket\r\n"
+                                         "connection: keep-alive\r\n"
+                                         "connection: Upgrade\r\n"
+                                         "sec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                                         "sec-websocket-version: 13\r\n\r\n";
   static const char bad_request[] = "HTTP/1.1 400";
   static const char switching_protocols[] = "HTTP/1.1 101";
 
   return test_handshake_response(port, invalid_method, bad_request, false) != 0 ||
-           test_handshake_response(port, missing_upgrade, bad_request, false) != 0 ||
-           test_handshake_response(port, wrong_version, bad_request, false) != 0 ||
-           test_handshake_response(port, blank_key, bad_request, false) != 0 ||
-           test_handshake_response(port, partial_key, bad_request, false) != 0 ||
-           test_handshake_response(port, lower_case_split, switching_protocols, true) != 0
+             test_handshake_response(port, missing_upgrade, bad_request, false) != 0 ||
+             test_handshake_response(port, wrong_version, bad_request, false) != 0 ||
+             test_handshake_response(port, blank_key, bad_request, false) != 0 ||
+             test_handshake_response(port, partial_key, bad_request, false) != 0 ||
+             test_handshake_response(port, lower_case_split, switching_protocols, true) != 0
            ? -1
            : 0;
 }
@@ -526,14 +570,13 @@ test_client_request_injection_rejected(void)
 static int
 connect_raw_websocket(const char *port)
 {
-  static const char request[] =
-    "GET / HTTP/1.1\r\n"
-    "Host: 127.0.0.1\r\n"
-    "Upgrade: websocket\r\n"
-    "Connection: Upgrade\r\n"
-    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-    "Sec-WebSocket-Version: 13\r\n"
-    "\r\n";
+  static const char request[] = "GET / HTTP/1.1\r\n"
+                                "Host: 127.0.0.1\r\n"
+                                "Upgrade: websocket\r\n"
+                                "Connection: Upgrade\r\n"
+                                "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                                "Sec-WebSocket-Version: 13\r\n"
+                                "\r\n";
   struct sockaddr_in address = { 0 };
   struct timeval timeout = { .tv_sec = 3, .tv_usec = 0 };
   char response[1024];
@@ -625,39 +668,105 @@ test_server_connection_cap(const char *port)
 static int
 test_handshake_deadline(const char *port)
 {
-  char byte;
-  int socket_fd = connect_raw_tcp(port, 13);
+  const char request_byte = 'G';
+  struct timespec pause = { .tv_sec = 0, .tv_nsec = 100000000 };
+  struct timeval timeout = { .tv_sec = 2, .tv_usec = 0 };
+  char response_byte;
+  int socket_fd = connect_raw_tcp(port, 0);
+  int closed = false;
+  int i;
   ssize_t received;
 
   if (socket_fd < 0)
     return -1;
-  received = recv(socket_fd, &byte, sizeof(byte), 0);
+
+  for (i = 0; i < 120; i++) {
+    if (send(socket_fd, &request_byte, sizeof(request_byte), MSG_NOSIGNAL) != sizeof(request_byte))
+      break;
+    received = recv(socket_fd, &response_byte, sizeof(response_byte), MSG_DONTWAIT);
+    if (received == 0) {
+      closed = true;
+      break;
+    }
+    if (received > 0) {
+      close(socket_fd);
+      return -1;
+    }
+    nanosleep(&pause, NULL);
+  }
+
+  setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+  if (!closed) {
+    received = recv(socket_fd, &response_byte, sizeof(response_byte), 0);
+    closed = received == 0;
+  }
   close(socket_fd);
-  return received == 0 ? 0 : -1;
+  return closed ? 0 : -1;
 }
 
 static int
 test_fragment_deadline(const char *port)
 {
-  const unsigned char incomplete_frame[] = { 0x82, 0x82, 0x11, 0x22, 0x33, 0x44 };
-  struct timeval timeout = { .tv_sec = 35, .tv_usec = 0 };
-  unsigned char close_frame[4];
+  static const unsigned char partial_frame_header[] = { 0x02, 0x80, 0x11, 0x22, 0x33, 0x44 };
+  static const unsigned char empty_continuation[] = { 0x00, 0x80, 0x55, 0x66, 0x77, 0x88 };
+  struct timespec pause = { .tv_sec = 0, .tv_nsec = 100000000 };
+  struct timeval timeout = { .tv_sec = 2, .tv_usec = 0 };
+  unsigned char response[4];
+  size_t response_length = 0;
+  size_t i;
+  int closed = false;
+  int iteration;
+  ssize_t received;
   int socket_fd = connect_raw_websocket(port);
 
   if (socket_fd < 0)
     return -1;
+
+  for (i = 0; i < sizeof(partial_frame_header); i++) {
+    if (send(socket_fd, &partial_frame_header[i], 1, MSG_NOSIGNAL) != 1) {
+      close(socket_fd);
+      return -1;
+    }
+    nanosleep(&pause, NULL);
+  }
+
+  for (iteration = 0; iteration < 320; iteration++) {
+    if (send(socket_fd, empty_continuation, sizeof(empty_continuation), MSG_NOSIGNAL) !=
+        sizeof(empty_continuation))
+      break;
+    received = recv(socket_fd, &response[response_length], sizeof(response) - response_length,
+                    MSG_DONTWAIT);
+    if (received == 0) {
+      closed = true;
+      break;
+    }
+    if (received > 0) {
+      response_length += (size_t) received;
+      if (response_length == sizeof(response)) {
+        closed = true;
+        break;
+      }
+    }
+    nanosleep(&pause, NULL);
+  }
+
   setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-  if (send_all(socket_fd, incomplete_frame, sizeof(incomplete_frame)) != 0 ||
-      receive_all(socket_fd, close_frame, sizeof(close_frame)) != 0) {
-    close(socket_fd);
+  while (response_length < sizeof(response)) {
+    received = recv(socket_fd, &response[response_length], sizeof(response) - response_length, 0);
+    if (received <= 0)
+      break;
+    response_length += (size_t) received;
+  }
+  if (response_length == sizeof(response))
+    closed = true;
+  close(socket_fd);
+
+  if (!closed || response[0] != 0x88 || response[1] != 2 || response[2] != 0x03 ||
+      response[3] != 0xf0) {
     return -1;
   }
 
-  close(socket_fd);
-  return close_frame[0] == 0x88 && close_frame[1] == 2 && close_frame[2] == 0x03 &&
-           close_frame[3] == 0xf0
-           ? 0
-           : -1;
+  return 0;
 }
 
 static int
@@ -734,7 +843,7 @@ test_fragmented_message_limit(const char *port)
 
   close(socket_fd);
   return close_frame[0] == 0x88 && close_frame[1] == 2 && close_frame[2] == 0x03 &&
-           close_frame[3] == 0xf1
+             close_frame[3] == 0xf1
            ? 0
            : -1;
 }
@@ -826,7 +935,7 @@ test_oversized_incoming_frame(const char *port, uint64_t payload_length)
 
   close(socket_fd);
   return close_frame[0] == 0x88 && close_frame[1] == 2 && close_frame[2] == 0x03 &&
-           close_frame[3] == 0xf1
+             close_frame[3] == 0xf1
            ? 0
            : -1;
 }
@@ -849,7 +958,7 @@ test_wrongly_masked_close_frame(const char *port)
 
   close(socket_fd);
   return close_frame[0] == 0x88 && close_frame[1] == 2 && close_frame[2] == 0x03 &&
-           close_frame[3] == 0xea
+             close_frame[3] == 0xea
            ? 0
            : -1;
 }
@@ -857,7 +966,7 @@ test_wrongly_masked_close_frame(const char *port)
 int
 main(void)
 {
-  static const char message[] = "loopback echo";
+  static const char message[] = TEST_ECHO_MESSAGE;
   struct function_state state = { 0 };
   struct websocket_server_init server_init = { 0 };
   struct websocket_client_init client_init = { 0 };
@@ -867,6 +976,7 @@ main(void)
   char port[6];
   bool success = false;
   int wait_result = 0;
+  size_t expected_echoes = 1;
 
   if (test_listener_descriptor_limit() != 0)
     return 1;
@@ -962,22 +1072,31 @@ main(void)
     goto cleanup;
   }
 
-  if (websocket_sendDataFragmentedStart(client, WS_DATA_TYPE_TEXT, "fragmented ", 11) != 0 ||
-      websocket_sendDataFragmentedCont(client, true, "echo", 4) != 0) {
+#if TEST_FRAGMENTED_ECHO_ENABLED
+  if (websocket_sendDataFragmentedStart(client, WS_DATA_TYPE_TEXT, TEST_FRAGMENT_START,
+                                        sizeof(TEST_FRAGMENT_START) - 1) != 0 ||
+      websocket_sendDataFragmentedCont(client, true, TEST_FRAGMENT_CONTINUATION,
+                                       sizeof(TEST_FRAGMENT_CONTINUATION) - 1) != 0) {
     fprintf(stderr, "failed to send fragmented loopback message\n");
     goto cleanup;
   }
+  expected_echoes++;
+#endif
 
   clock_gettime(CLOCK_REALTIME, &deadline);
   deadline.tv_sec += 10;
   pthread_mutex_lock(&state.mutex);
-  while ((state.messages_received < 2 || state.messages_echoed < 2) && wait_result == 0)
+  while ((state.messages_received < expected_echoes || state.messages_echoed < expected_echoes) &&
+         wait_result == 0)
     wait_result = pthread_cond_timedwait(&state.condition, &state.mutex, &deadline);
   success = wait_result == 0 && state.messages_match && state.echoes_succeeded;
   pthread_mutex_unlock(&state.mutex);
 
   if (success) {
     websocket_ref(client);
+    pthread_mutex_lock(&state.mutex);
+    state.client_unref_in_close = true;
+    pthread_mutex_unlock(&state.mutex);
     websocketClient_close(client, WS_CLOSE_CODE_NORMAL);
 
     clock_gettime(CLOCK_REALTIME, &deadline);
@@ -989,13 +1108,11 @@ main(void)
     success = wait_result == 0 && state.client_close_callback_saw_closed_state;
     pthread_mutex_unlock(&state.mutex);
 
-    websocket_unref(client);
     client = NULL;
   }
 
   if (!success)
-    fprintf(stderr,
-            "loopback test failed: wait=%d received=%zu echoed=%zu matches=%d sends=%d\n",
+    fprintf(stderr, "loopback test failed: wait=%d received=%zu echoed=%zu matches=%d sends=%d\n",
             wait_result, state.messages_received, state.messages_echoed, state.messages_match,
             state.echoes_succeeded);
 
