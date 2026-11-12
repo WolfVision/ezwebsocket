@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests (OpenSSL ${{ matrix.openssl }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        openssl: [disabled, enabled]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install build and coverage tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends meson ninja-build gcc gcovr pkg-config libssl-dev
+
+      - name: Configure
+        run: >-
+          meson setup build
+          -Dtests=enabled
+          -Dexamples=enabled
+          -Dopenssl=${{ matrix.openssl }}
+          -Db_coverage=true
+
+      - name: Build
+        run: meson compile -C build
+
+      - name: Run tests
+        run: meson test -C build --print-errorlogs
+
+      - name: Generate coverage reports
+        run: |
+          gcovr --root . --filter 'lib/' --print-summary build
+          gcovr --root . --filter 'lib/' --txt --output coverage.txt build
+          gcovr --root . --filter 'lib/' --xml-pretty --output coverage.xml build
+          cat coverage.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-openssl-${{ matrix.openssl }}
+          path: |
+            coverage.txt
+            coverage.xml
+          if-no-files-found: error

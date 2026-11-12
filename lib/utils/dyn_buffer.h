@@ -27,6 +27,10 @@
 
 #include <stddef.h>
 
+#ifndef MAX_WEBSOCKET_PAYLOAD_LENGTH
+#define MAX_WEBSOCKET_PAYLOAD_LENGTH (4 * 1024 * 1024)
+#endif
+
 //! structure that contains all necessary information of the dynamic buffer
 struct dyn_buffer {
   //! pointer to the buffer that holds the data
@@ -35,21 +39,23 @@ struct dyn_buffer {
   size_t used;
   //! the size of the buffer
   size_t size;
+  //! offset of the first used byte
+  size_t start;
 };
 
 //! The minimum allocated amount of bytes
 #define DYNBUFFER_INCREASE_STEPS                 1024
 
 //! returns the write position of the dynbuffer
-#define DYNBUFFER_WRITE_POS(buf)                 (&((buf)->buffer[(buf)->used]))
+#define DYNBUFFER_WRITE_POS(buf)                 (&((buf)->buffer[(buf)->start + (buf)->used]))
 //! increases the write position of the dynbuffer
 #define DYNBUFFER_INCREASE_WRITE_POS(buf, bytes) ((buf)->used += bytes)
 //! returns the remaining space of the dynbuffer
-#define DYNBUFFER_BYTES_FREE(buf)                ((buf)->size - (buf)->used)
+#define DYNBUFFER_BYTES_FREE(buf)                ((buf)->size - (buf)->start - (buf)->used)
 //! returns the current size of the dynbuffer
 #define DYNBUFFER_SIZE(buf)                      ((buf)->used)
 //! returns the base address of the buffer
-#define DYNBUFFER_BUFFER(buf)                    ((buf)->buffer)
+#define DYNBUFFER_BUFFER(buf)                    (&((buf)->buffer[(buf)->start]))
 
 void
 dynBuffer_init(struct dyn_buffer *buffer);

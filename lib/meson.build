@@ -37,6 +37,9 @@ libezwebsocket = shared_library(
     'ezwebsocket',
     srcs_websocket,
     include_directories : inc_websocket,
+    c_args : [
+      '-DMAX_WEBSOCKET_PAYLOAD_LENGTH=' + get_option('max_websocket_payload_length').to_string(),
+    ],
     version : meson.project_version(),
     dependencies: deps_websocket,
     install : true)

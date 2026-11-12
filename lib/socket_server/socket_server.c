@@ -40,8 +40,15 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#define HANDSHAKE_BUFFER_SIZE 8192
+#define DYNBUFFER_MAX_SIZE                                                                         \
+  ((MAX_WEBSOCKET_PAYLOAD_LENGTH + 14) > HANDSHAKE_BUFFER_SIZE                                     \
+     ? (MAX_WEBSOCKET_PAYLOAD_LENGTH + 14)                                                         \
+     : HANDSHAKE_BUFFER_SIZE)
+#define MAX_SERVER_CONNECTIONS 128
+
 //! starting size of the message buffer (will be increased everytime the buffer is to small)
-#define READ_SIZE 1024
+#define READ_SIZE              1024
 
 //! States of the socket connection
 enum socket_connection_state {
@@ -104,6 +111,8 @@ struct socket_server_desc {
   void *(*socket_onOpen)(void *socketUserData, struct socket_connection_desc *connectionDesc);
   //! function that should be called when a connection is closed
   void (*socket_onClose)(void *socketUserData, void *connectionDesc, void *connectionUserData);
+  //! function that should be called when a connection has no data to process
+  bool (*socket_onIdle)(void *socketUserData, void *connectionDesc, void *connectionUserData);
   //! user data for the server socket
   void *socketUserData;
   //! file descriptor of the socket
@@ -137,11 +146,16 @@ addConnection(struct socket_server_desc *socketDesc, struct socket_connection_de
     return -1;
   }
 
-  refcnt_ref(desc);
-  listElement->desc = desc;
-
   pthread_mutex_lock(&socketDesc->listMutex);
   {
+    if (socketDesc->numConnections >= MAX_SERVER_CONNECTIONS) {
+      pthread_mutex_unlock(&socketDesc->listMutex);
+      free(listElement);
+      return -1;
+    }
+
+    refcnt_ref(desc);
+    listElement->desc = desc;
     if (!socketDesc->list) {
       listElement->next = NULL;
       socketDesc->list = listElement;
@@ -229,8 +243,8 @@ connectionThread(void *params)
   struct socket_connection_desc *connectionDesc = params;
   fd_set readfds;
   int n;
+  int selectResult;
   size_t count;
-  int increase;
   size_t bytesFree;
   bool first;
   struct timeval tv;
@@ -248,16 +262,26 @@ connectionThread(void *params)
     tv.tv_usec = 300000;
     FD_ZERO(&readfds);
     FD_SET(connectionDesc->connectionSocketFd, &readfds);
-    if (select(connectionDesc->connectionSocketFd + 1, &readfds, NULL, NULL, &tv) > 0) {
+    selectResult = select(connectionDesc->connectionSocketFd + 1, &readfds, NULL, NULL, &tv);
+    if (selectResult == 0 && connectionDesc->socketDesc->socket_onIdle &&
+        connectionDesc->socketDesc->socket_onIdle(connectionDesc->socketDesc->socketUserData,
+                                                  connectionDesc,
+                                                  connectionDesc->connectionUserData)) {
+      connectionDesc->state = SOCKET_SESSION_STATE_DISCONNECTED;
+    }
+    if (selectResult > 0) {
       if (FD_ISSET(connectionDesc->connectionSocketFd, &readfds)) {
         first = true;
-        increase = 1;
         do {
           bytesFree = DYNBUFFER_BYTES_FREE(&connectionDesc->buffer);
           if (DYNBUFFER_BYTES_FREE(&connectionDesc->buffer) < READ_SIZE) {
-            dynBuffer_increase_to(&(connectionDesc->buffer), READ_SIZE * increase);
+            size_t maxFree = DYNBUFFER_MAX_SIZE - DYNBUFFER_SIZE(&connectionDesc->buffer);
+            size_t requested = maxFree < READ_SIZE ? maxFree : READ_SIZE;
+            if (!requested || dynBuffer_increase_to(&(connectionDesc->buffer), requested) != 0) {
+              connectionDesc->state = SOCKET_SESSION_STATE_DISCONNECTED;
+              break;
+            }
             bytesFree = DYNBUFFER_BYTES_FREE(&connectionDesc->buffer);
-            increase++;
           }
           n = recv(connectionDesc->connectionSocketFd,
                    DYNBUFFER_WRITE_POS(&(connectionDesc->buffer)), bytesFree, MSG_DONTWAIT);
@@ -271,10 +295,7 @@ connectionThread(void *params)
             DYNBUFFER_INCREASE_WRITE_POS((&(connectionDesc->buffer)), n);
           else
             break;
-        } while (((size_t) n == bytesFree) &&
-                 (connectionDesc->state == SOCKET_SESSION_STATE_CONNECTED));
 
-        if (connectionDesc->state == SOCKET_SESSION_STATE_CONNECTED) {
           do {
             count = connectionDesc->socketDesc
                       ->socket_onMessage(connectionDesc->socketDesc->socketUserData, connectionDesc,
@@ -284,7 +305,11 @@ connectionThread(void *params)
             dynBuffer_removeLeadingBytes(&(connectionDesc->buffer), count);
           } while (count && DYNBUFFER_SIZE(&(connectionDesc->buffer)) &&
                    (connectionDesc->state == SOCKET_SESSION_STATE_CONNECTED));
-        }
+
+          if (DYNBUFFER_SIZE(&connectionDesc->buffer) >= DYNBUFFER_MAX_SIZE)
+            connectionDesc->state = SOCKET_SESSION_STATE_DISCONNECTED;
+        } while (((size_t) n == bytesFree) &&
+                 (connectionDesc->state == SOCKET_SESSION_STATE_CONNECTED));
       }
     }
   }
@@ -320,10 +345,24 @@ startConnection(int socketFd, struct socket_server_desc *socketDesc)
   struct socket_connection_desc *desc;
   struct sockaddr_in sock_addr = { 0 };
   socklen_t sock_addr_len = sizeof(sock_addr);
+  struct timeval send_timeout = { .tv_sec = 5, .tv_usec = 0 };
+
+  if (socketFd < 0 || socketFd >= FD_SETSIZE) {
+    if (socketFd >= 0)
+      close(socketFd);
+    return -1;
+  }
+
+  if (setsockopt(socketFd, SOL_SOCKET, SO_SNDTIMEO, &send_timeout, sizeof(send_timeout)) != 0) {
+    ezwebsocket_log(EZLOG_ERROR, "failed to set socket send timeout\n");
+    close(socketFd);
+    return -1;
+  }
 
   desc = refcnt_allocate(sizeof(struct socket_connection_desc), NULL);
   if (!desc) {
     ezwebsocket_log(EZLOG_ERROR, "refcnt_allocate failed\n");
+    close(socketFd);
     return -1;
   }
 
@@ -346,11 +385,18 @@ startConnection(int socketFd, struct socket_server_desc *socketDesc)
   dynBuffer_init(&(desc->buffer));
   desc->connectionUserData = NULL;
 
-  addConnection(socketDesc, desc);
+  if (addConnection(socketDesc, desc) != 0) {
+    close(socketFd);
+    refcnt_unref(desc);
+    return -1;
+  }
   desc->state = SOCKET_SESSION_STATE_CONNECTED;
 
   if (pthread_create(&desc->tid, NULL, connectionThread, desc) != 0) {
     ezwebsocket_log(EZLOG_ERROR, "pthread_create failed\n");
+    desc->state = SOCKET_SESSION_STATE_DISCONNECTED;
+    close(socketFd);
+    removeConnection(socketDesc, desc);
     refcnt_unref(desc);
     return -1;
   }
@@ -388,10 +434,15 @@ socketServer_send(struct socket_connection_desc *connectionDesc, void *msg, size
     return -1;
 
   rc = send(connectionDesc->connectionSocketFd, msg, len, MSG_NOSIGNAL);
-  if (rc == -1) {
+  if (rc < 0) {
     ezwebsocket_log(EZLOG_ERROR, "send failed: %s\n", strerror(errno));
   }
-  return ((size_t) rc == len ? 0 : -1);
+  if (rc < 0 || (size_t) rc != len) {
+    socketServer_closeConnection(connectionDesc);
+    return -1;
+  }
+
+  return 0;
 }
 
 /**
@@ -433,8 +484,10 @@ socketServerThread(void *sockDesc)
         // wait for connection requests
         socketChildFd = accept(socketDesc->socketFd, (struct sockaddr *) &connectionAddr,
                                &connectionAddrLen);
-        if (socketChildFd < 0)
+        if (socketChildFd < 0) {
           ezwebsocket_log(EZLOG_ERROR, "ERROR on accept\n");
+          continue;
+        }
 
         if (startConnection(socketChildFd, socketDesc) < 0)
           ezwebsocket_log(EZLOG_ERROR, "startConnection failed\n");
@@ -477,6 +530,7 @@ socketServer_open(struct socket_server_init *socketInit, void *socketUserData)
 
   socketDesc->socket_onClose = socketInit->socket_onClose;
   socketDesc->socket_onOpen = socketInit->socket_onOpen;
+  socketDesc->socket_onIdle = socketInit->socket_onIdle;
   socketDesc->socket_onMessage = socketInit->socket_onMessage;
   socketDesc->socketUserData = socketUserData;
   socketDesc->list = NULL;
@@ -487,6 +541,12 @@ socketServer_open(struct socket_server_init *socketInit, void *socketUserData)
     if ((socketDesc->socketFd = socket(iter->ai_family, iter->ai_socktype, iter->ai_protocol)) <
         0) {
       ezwebsocket_log(EZLOG_ERROR, "socket failed\n");
+      continue;
+    }
+
+    if (socketDesc->socketFd >= FD_SETSIZE) {
+      ezwebsocket_log(EZLOG_ERROR, "server socket exceeds FD_SETSIZE\n");
+      close(socketDesc->socketFd);
       continue;
     }
 
@@ -532,8 +592,7 @@ socketServer_open(struct socket_server_init *socketInit, void *socketUserData)
 
   freeaddrinfo(serverinfo);
 
-  // wait for connections allow up to 10 connections in queue
-  if (listen(socketDesc->socketFd, 10) < 0)
+  if (listen(socketDesc->socketFd, MAX_SERVER_CONNECTIONS) < 0)
     ezwebsocket_log(EZLOG_ERROR, "listen failed\n");
 
   socketDesc->running = true;

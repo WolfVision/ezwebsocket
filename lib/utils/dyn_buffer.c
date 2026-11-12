@@ -25,6 +25,7 @@
 #include "dyn_buffer.h"
 
 #include <ezwebsocket_log.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,6 +41,7 @@ dynBuffer_init(struct dyn_buffer *buffer)
   buffer->buffer = NULL;
   buffer->size = 0;
   buffer->used = 0;
+  buffer->start = 0;
 }
 
 /**
@@ -54,6 +56,11 @@ dynBuffer_init(struct dyn_buffer *buffer)
 int
 dynBuffer_increase_to(struct dyn_buffer *buffer, size_t numFreeBytes)
 {
+  if (numFreeBytes > SIZE_MAX - buffer->used) {
+    ezwebsocket_log(EZLOG_ERROR, "buffer size overflow\n");
+    return -1;
+  }
+
   if (buffer->buffer == NULL) {
     buffer->buffer = malloc(numFreeBytes);
     if (!buffer->buffer) {
@@ -63,10 +70,16 @@ dynBuffer_increase_to(struct dyn_buffer *buffer, size_t numFreeBytes)
 
     buffer->size = numFreeBytes;
     buffer->used = 0;
+    buffer->start = 0;
   } else {
     char *newbuf;
 
-    if (buffer->size - buffer->used < numFreeBytes) {
+    if (buffer->size - buffer->start - buffer->used < numFreeBytes && buffer->start) {
+      memmove(buffer->buffer, &buffer->buffer[buffer->start], buffer->used);
+      buffer->start = 0;
+    }
+
+    if (buffer->size - buffer->start - buffer->used < numFreeBytes) {
       buffer->size = buffer->used + numFreeBytes;
       newbuf = realloc(buffer->buffer, buffer->size);
       if (!newbuf) {
@@ -74,6 +87,7 @@ dynBuffer_increase_to(struct dyn_buffer *buffer, size_t numFreeBytes)
         buffer->buffer = NULL;
         buffer->size = 0;
         buffer->used = 0;
+        buffer->start = 0;
         ezwebsocket_log(EZLOG_ERROR, "realloc failed\n");
         return -1;
       }
@@ -109,13 +123,14 @@ dynBuffer_removeLeadingBytes(struct dyn_buffer *buffer, size_t count)
   }
 
   if (buffer->used > count) {
-    buffer->used = buffer->used - count;
-    memmove(&buffer->buffer[0], &buffer->buffer[count], buffer->used);
+    buffer->start += count;
+    buffer->used -= count;
   } else {
     free(buffer->buffer);
     buffer->buffer = NULL;
     buffer->used = 0;
     buffer->size = 0;
+    buffer->start = 0;
   }
 
   return 0;
@@ -139,6 +154,7 @@ dynBuffer_delete(struct dyn_buffer *buffer)
   buffer->buffer = NULL;
   buffer->size = 0;
   buffer->used = 0;
+  buffer->start = 0;
 
   return 0;
 }

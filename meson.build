@@ -28,4 +28,8 @@ if get_option('examples').enabled()
   subdir('examples')
 endif
 
+if get_option('tests').enabled() or get_option('tests').auto()
+  subdir('tests')
+endif
+
 configure_file(output: 'config.h', configuration: config_h)

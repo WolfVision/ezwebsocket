@@ -44,6 +44,12 @@
 #include <openssl/ssl.h>
 #endif /* HAVE_OPENSSL */
 
+#define HANDSHAKE_BUFFER_SIZE 8192
+#define DYNBUFFER_MAX_SIZE                                                                         \
+  ((MAX_WEBSOCKET_PAYLOAD_LENGTH + 14) > HANDSHAKE_BUFFER_SIZE                                     \
+     ? (MAX_WEBSOCKET_PAYLOAD_LENGTH + 14)                                                         \
+     : HANDSHAKE_BUFFER_SIZE)
+
 //! the minimum buffer allocation size
 #define MIN_ALLOC_SIZE 2048
 
@@ -66,6 +72,8 @@ struct socket_client_desc {
   void *(*socket_onOpen)(void *socketUserData, void *socketDesc);
   //! callback function that gets called when the socket is closed
   void (*socket_onClose)(void *socketUserData, void *socketDesc, void *sessionData);
+  //! callback function that gets called when the socket has no data to process
+  bool (*socket_onIdle)(void *socketUserData, void *socketDesc, void *sessionData);
   //! Pointer to the socket user data
   void *socketUserData;
   //! the thread ID of the socket client thread
@@ -82,6 +90,8 @@ struct socket_client_desc {
   volatile enum socket_client_state state;
   //! indicates if the task is still running
   volatile bool taskRunning;
+  //! indicates that the socket thread must free its own descriptor on exit
+  bool cleanupOnThreadExit;
   //! init done signal
   pthread_mutex_t initDoneSignal;
 #ifdef HAVE_OPENSSL
@@ -89,6 +99,37 @@ struct socket_client_desc {
   SSL *ssl;
 #endif
 };
+
+static void
+socketClient_closeTransport(struct socket_client_desc *socketDesc)
+{
+#ifdef HAVE_OPENSSL
+  if (socketDesc->ssl) {
+    SSL_free(socketDesc->ssl);
+    SSL_CTX_free(socketDesc->ssl_ctx);
+    socketDesc->ssl = NULL;
+    socketDesc->ssl_ctx = NULL;
+  }
+#endif
+
+  if (socketDesc->socketFd != -1) {
+    close(socketDesc->socketFd);
+    socketDesc->socketFd = -1;
+  }
+}
+
+static void
+socketClient_freeResources(struct socket_client_desc *socketDesc, bool fromThread)
+{
+  if (fromThread)
+    pthread_detach(pthread_self());
+
+  if (socketDesc->buffer.buffer)
+    dynBuffer_delete(&socketDesc->buffer);
+  pthread_mutex_destroy(&socketDesc->initDoneSignal);
+  socketClient_closeTransport(socketDesc);
+  free(socketDesc);
+}
 
 /**
  * \brief The socket client thread
@@ -103,14 +144,15 @@ socketClientThread(void *socketDescriptor)
   struct socket_client_desc *socketDesc = socketDescriptor;
   fd_set readfds;
   int n;
+  int selectResult;
   size_t count;
-  int increase;
   size_t bytesFree;
   bool first;
   struct timeval tv;
 
   // wait for start signal
   pthread_mutex_lock(&socketDesc->initDoneSignal);
+  pthread_mutex_unlock(&socketDesc->initDoneSignal);
 
   if (socketDesc->socket_onOpen != NULL)
     socketDesc->sessionData = socketDesc->socket_onOpen(socketDesc->socketUserData, socketDesc);
@@ -120,16 +162,23 @@ socketClientThread(void *socketDescriptor)
     tv.tv_usec = 300000;
     FD_ZERO(&readfds);
     FD_SET(socketDesc->socketFd, &readfds);
-    if (select(socketDesc->socketFd + 1, &readfds, NULL, NULL, &tv) > 0) {
+    selectResult = select(socketDesc->socketFd + 1, &readfds, NULL, NULL, &tv);
+    if (selectResult == 0 && socketDesc->socket_onIdle &&
+        socketDesc->socket_onIdle(socketDesc->socketUserData, socketDesc, socketDesc->sessionData))
+      socketDesc->state = SOCKET_CLIENT_STATE_DISCONNECTED;
+    if (selectResult > 0) {
       if (FD_ISSET(socketDesc->socketFd, &readfds)) {
         first = true;
-        increase = 1;
         do {
           bytesFree = DYNBUFFER_BYTES_FREE(&socketDesc->buffer);
           if (DYNBUFFER_BYTES_FREE(&socketDesc->buffer) < MIN_ALLOC_SIZE) {
-            dynBuffer_increase_to(&(socketDesc->buffer), MIN_ALLOC_SIZE * increase);
+            size_t maxFree = DYNBUFFER_MAX_SIZE - DYNBUFFER_SIZE(&socketDesc->buffer);
+            size_t requested = maxFree < MIN_ALLOC_SIZE ? maxFree : MIN_ALLOC_SIZE;
+            if (!requested || dynBuffer_increase_to(&(socketDesc->buffer), requested) != 0) {
+              socketDesc->state = SOCKET_CLIENT_STATE_DISCONNECTED;
+              break;
+            }
             bytesFree = DYNBUFFER_BYTES_FREE(&socketDesc->buffer);
-            increase++;
           }
 #ifdef HAVE_OPENSSL
           if (socketDesc->ssl)
@@ -148,9 +197,7 @@ socketClientThread(void *socketDescriptor)
             DYNBUFFER_INCREASE_WRITE_POS((&(socketDesc->buffer)), n);
           else
             break;
-        } while (((size_t) n == bytesFree) && (socketDesc->state == SOCKET_CLIENT_STATE_CONNECTED));
 
-        if (socketDesc->state == SOCKET_CLIENT_STATE_CONNECTED) {
           do {
             count = socketDesc->socket_onMessage(socketDesc->socketUserData, socketDesc,
                                                  socketDesc->sessionData,
@@ -159,7 +206,10 @@ socketClientThread(void *socketDescriptor)
             dynBuffer_removeLeadingBytes(&(socketDesc->buffer), count);
           } while (count && DYNBUFFER_SIZE(&(socketDesc->buffer)) &&
                    (socketDesc->state == SOCKET_CLIENT_STATE_CONNECTED));
-        }
+
+          if (DYNBUFFER_SIZE(&socketDesc->buffer) >= DYNBUFFER_MAX_SIZE)
+            socketDesc->state = SOCKET_CLIENT_STATE_DISCONNECTED;
+        } while (((size_t) n == bytesFree) && (socketDesc->state == SOCKET_CLIENT_STATE_CONNECTED));
       }
     }
   }
@@ -170,7 +220,13 @@ socketClientThread(void *socketDescriptor)
     socketDesc->socket_onClose(socketDesc->socketUserData, socketDesc, socketDesc->sessionData);
 
   socketDesc->state = SOCKET_CLIENT_STATE_DISCONNECTED;
+  socketClient_closeTransport(socketDesc);
   socketDesc->taskRunning = false;
+
+  if (socketDesc->cleanupOnThreadExit) {
+    socketClient_freeResources(socketDesc, true);
+    return NULL;
+  }
 
   return NULL;
 }
@@ -244,6 +300,7 @@ socketClient_open(struct socket_client_init *socketInit, void *socketUserData)
   socketDesc->socketUserData = socketUserData;
   socketDesc->socket_onOpen = socketInit->socket_onOpen;
   socketDesc->socket_onClose = socketInit->socket_onClose;
+  socketDesc->socket_onIdle = socketInit->socket_onIdle;
   socketDesc->socket_onMessage = socketInit->socket_onMessage;
   socketDesc->state = SOCKET_CLIENT_STATE_DISCONNECTED;
 
@@ -354,32 +411,23 @@ socketClient_close(void *socketDescriptor)
     return;
 
   socketDesc->state = SOCKET_CLIENT_STATE_DISCONNECT_REQUEST;
+  if (socketDesc->tidValid && pthread_equal(pthread_self(), socketDesc->tid)) {
+    socketDesc->cleanupOnThreadExit = true;
+    return;
+  }
+
   while (socketDesc->taskRunning)
     usleep(30000);
-
-  pthread_mutex_unlock(&socketDesc->initDoneSignal);
-  pthread_mutex_destroy(&socketDesc->initDoneSignal);
 
   if (socketDesc->tidValid) {
     socketDesc->state = SOCKET_CLIENT_STATE_DISCONNECTED;
     pthread_join(socketDesc->tid, NULL);
     socketDesc->tidValid = false;
-    dynBuffer_delete(&socketDesc->buffer);
+  } else {
+    pthread_mutex_unlock(&socketDesc->initDoneSignal);
   }
 
-#ifdef HAVE_OPENSSL
-  if (socketDesc->ssl) {
-    SSL_free(socketDesc->ssl);
-    SSL_CTX_free(socketDesc->ssl_ctx);
-  }
-#endif
-
-  if (socketDesc->socketFd != -1) {
-    close(socketDesc->socketFd);
-    socketDesc->socketFd = -1;
-  }
-
-  free(socketDesc);
+  socketClient_freeResources(socketDesc, false);
 }
 
 /**

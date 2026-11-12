@@ -25,6 +25,7 @@
 #include <ezwebsocket_log.h>
 #include <pthread.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #if (__STDC_VERSION__ >= 201112L)
@@ -56,6 +57,11 @@ void *
 refcnt_allocate(size_t size, void (*pfnFree)(void *))
 {
   struct ref_cnt_obj *ref;
+
+  if (size > SIZE_MAX - sizeof(struct ref_cnt_obj)) {
+    ezwebsocket_log(EZLOG_ERROR, "allocation size overflow\n");
+    return NULL;
+  }
 
   ref = malloc(sizeof(struct ref_cnt_obj) + size);
   if (!ref) {

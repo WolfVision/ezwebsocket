@@ -9,9 +9,8 @@
  * and/or sell copies of the Software, and to permit persons to whom the
  * Software is furnished to do so, subject to the following conditions:
  *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
  *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
@@ -207,10 +206,12 @@ void
 websocketServer_close(struct websocket_server_desc *wsDesc);
 
 /**
- * \brief Closes a websocket client
+ * \brief Closes a websocket client and releases the caller's reference
  *
  * \param *wsConnectionDesc Pointer to the websocket client descriptor
  * \param code The closing code
+ *
+ * Other references keep the descriptor alive until they are released with websocket_unref.
  */
 void
 websocketClient_close(struct websocket_connection_desc *wsConnectionDesc, enum ws_close_code code);
@@ -229,6 +230,9 @@ websocketConnection_isConnected(struct websocket_connection_desc *wsConnectionDe
  * \brief Increments the reference count of the given object
  *
  * \param *ptr poiner to the object
+ *
+ * Take a reference before sharing a connection descriptor across threads, and release it after
+ * the final use. The pointer must be valid when this function is called.
  */
 void
 websocket_ref(void *ptr);

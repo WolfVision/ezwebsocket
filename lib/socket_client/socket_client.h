@@ -39,6 +39,8 @@ struct socket_client_init {
   void *(*socket_onOpen)(void *socketUserData, void *socketDesc);
   //! callback that should be called when the socket is closed use NULL if not used
   void (*socket_onClose)(void *socketUserData, void *socketDesc, void *sessionData);
+  //! callback that should be called when the socket has no data to process
+  bool (*socket_onIdle)(void *socketUserData, void *socketDesc, void *sessionData);
   //! the remote port we want to connect to
   unsigned short port;
   //! the address we want to connect to

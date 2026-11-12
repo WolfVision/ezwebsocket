@@ -17,6 +17,7 @@ A million repetitions of "a"
 
 #define SHA1HANDSOFF
 
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -58,6 +59,15 @@ A million repetitions of "a"
 #define R4(v, w, x, y, z, i)                                                                       \
   z += (w ^ x ^ y) + blk(i) + 0xCA62C1D6 + rol(v, 5);                                              \
   w = rol(w, 30);
+
+static void
+secure_clear(void *data, size_t length)
+{
+  volatile unsigned char *byte = data;
+
+  while (length--)
+    *byte++ = 0;
+}
 
 /* Hash a single 512-bit block. This is the core of the algorithm. */
 
@@ -179,7 +189,7 @@ SHA1Transform(uint32_t state[5], const unsigned char buffer[64])
   /* Wipe variables */
   a = b = c = d = e = 0;
 #ifdef SHA1HANDSOFF
-  memset(block, '\0', sizeof(block));
+  secure_clear(block, sizeof(block));
 #endif
 }
 
@@ -267,8 +277,8 @@ SHA1Final(unsigned char digest[20], SHA1_CTX *context)
     digest[i] = (unsigned char) ((context->state[i >> 2] >> ((3 - (i & 3)) * 8)) & 255);
   }
   /* Wipe variables */
-  memset(context, '\0', sizeof(*context));
-  memset(&finalcount, '\0', sizeof(finalcount));
+  secure_clear(context, sizeof(*context));
+  secure_clear(finalcount, sizeof(finalcount));
 }
 
 void
