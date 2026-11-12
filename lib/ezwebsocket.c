@@ -230,9 +230,9 @@ calculateSecWebSocketAccept(const char *key)
 // Sec-WebSocket-Version: 13
 
 //! websocket handshake key identifier
-#define WS_HS_KEY_ID  "Sec-WebSocket-Key:"
+#define WS_HS_KEY_ID          "Sec-WebSocket-Key:"
 //! websocket handshake key identifier length
-#define WS_HS_KEY_LEN 25
+#define WS_HS_KEY_LEN         25
 #define WS_HANDSHAKE_MAX_SIZE 8192
 
 static bool
@@ -271,8 +271,8 @@ header_value_has_token(const char *value, size_t value_len, const char *token)
   size_t end;
 
   while (start < value_len) {
-    while (start < value_len && (value[start] == ' ' || value[start] == '\t' ||
-                                 value[start] == ','))
+    while (start < value_len &&
+           (value[start] == ' ' || value[start] == '\t' || value[start] == ','))
       start++;
     end = start;
     while (end < value_len && value[end] != ',')
@@ -371,10 +371,9 @@ parseHttpHeader(const char *wsHeader, size_t len, char *key, size_t *headerLen)
       }
     }
   }
-  if (first_space != 3 || second_space == SIZE_MAX ||
-      !ascii_equal(wsHeader, first_space, "GET") || second_space == first_space + 1 ||
-      !ascii_equal(&wsHeader[second_space + 1], request_line_end - second_space - 1,
-                   "HTTP/1.1"))
+  if (first_space != 3 || second_space == SIZE_MAX || !ascii_equal(wsHeader, first_space, "GET") ||
+      second_space == first_space + 1 ||
+      !ascii_equal(&wsHeader[second_space + 1], request_line_end - second_space - 1, "HTTP/1.1"))
     return -1;
   for (i = first_space + 1; i < second_space; i++) {
     if ((unsigned char) wsHeader[i] <= 0x20 || (unsigned char) wsHeader[i] == 0x7f)
@@ -399,8 +398,7 @@ parseHttpHeader(const char *wsHeader, size_t len, char *key, size_t *headerLen)
         colon = i;
         break;
       }
-      if (!isalnum((unsigned char) wsHeader[i]) &&
-          !strchr("!#$%&'*+-.^_`|~", wsHeader[i]))
+      if (!isalnum((unsigned char) wsHeader[i]) && !strchr("!#$%&'*+-.^_`|~", wsHeader[i]))
         return -1;
     }
     if (colon == SIZE_MAX || colon == position)
@@ -408,11 +406,11 @@ parseHttpHeader(const char *wsHeader, size_t len, char *key, size_t *headerLen)
 
     value_start = colon + 1;
     value_end = line_end;
-    while (value_start < value_end && (wsHeader[value_start] == ' ' ||
-                                       wsHeader[value_start] == '\t'))
+    while (value_start < value_end &&
+           (wsHeader[value_start] == ' ' || wsHeader[value_start] == '\t'))
       value_start++;
-    while (value_end > value_start && (wsHeader[value_end - 1] == ' ' ||
-                                       wsHeader[value_end - 1] == '\t'))
+    while (value_end > value_start &&
+           (wsHeader[value_end - 1] == ' ' || wsHeader[value_end - 1] == '\t'))
       value_end--;
     for (i = value_start; i < value_end; i++) {
       unsigned char character = (unsigned char) wsHeader[i];
@@ -425,15 +423,16 @@ parseHttpHeader(const char *wsHeader, size_t len, char *key, size_t *headerLen)
         return -1;
       host_seen = true;
     } else if (ascii_equal(&wsHeader[position], colon - position, "Upgrade")) {
-      if (upgrade_seen || !header_value_has_token(&wsHeader[value_start],
-                                                   value_end - value_start, "websocket"))
+      if (value_start == value_end)
         return -1;
-      upgrade_seen = true;
+      upgrade_seen = upgrade_seen || header_value_has_token(&wsHeader[value_start],
+                                                            value_end - value_start, "websocket");
     } else if (ascii_equal(&wsHeader[position], colon - position, "Connection")) {
-      if (connection_seen || !header_value_has_token(&wsHeader[value_start],
-                                                      value_end - value_start, "upgrade"))
+      if (value_start == value_end)
         return -1;
-      connection_seen = true;
+      connection_seen = connection_seen ||
+                        header_value_has_token(&wsHeader[value_start], value_end - value_start,
+                                               "upgrade");
     } else if (ascii_equal(&wsHeader[position], colon - position, "Sec-WebSocket-Version")) {
       if (version_seen || !ascii_equal(&wsHeader[value_start], value_end - value_start, "13"))
         return -1;
@@ -532,8 +531,7 @@ checkWsHandshakeReply(struct websocket_connection_desc *wsConnectionDesc, const 
 
   request_line_end = find_crlf(header, 0, end - 2);
   if (request_line_end == SIZE_MAX || request_line_end < 12 ||
-      memcmp(header, "HTTP/1.1 101", 12) != 0 ||
-      (request_line_end > 12 && header[12] != ' '))
+      memcmp(header, "HTTP/1.1 101", 12) != 0 || (request_line_end > 12 && header[12] != ' '))
     return -1;
 
   position = request_line_end + 2;
@@ -575,15 +573,16 @@ checkWsHandshakeReply(struct websocket_connection_desc *wsConnectionDesc, const 
     }
 
     if (ascii_equal(&header[position], colon - position, "Upgrade")) {
-      if (upgrade_seen || !header_value_has_token(&header[value_start], value_end - value_start,
-                                                   "websocket"))
+      if (value_start == value_end)
         return -1;
-      upgrade_seen = true;
+      upgrade_seen = upgrade_seen || header_value_has_token(&header[value_start],
+                                                            value_end - value_start, "websocket");
     } else if (ascii_equal(&header[position], colon - position, "Connection")) {
-      if (connection_seen || !header_value_has_token(&header[value_start], value_end - value_start,
-                                                      "upgrade"))
+      if (value_start == value_end)
         return -1;
-      connection_seen = true;
+      connection_seen = connection_seen ||
+                        header_value_has_token(&header[value_start], value_end - value_start,
+                                               "upgrade");
     } else if (ascii_equal(&header[position], colon - position, "Sec-WebSocket-Accept")) {
       if (accept_seen || value_start == value_end)
         return -1;
@@ -779,6 +778,8 @@ parseWebsocketHeader(const unsigned char *data, size_t len, struct ws_header *he
 
   header->masked = (data[1] & 0x80) ? true : false;
   size_t i, lengthNumBytes;
+  size_t maxPayloadLength = header->opcode >= WS_OPCODE_DISCONNECT ? MAX_DEFAULT_PAYLOAD_LENGTH
+                                                                   : MAX_WEBSOCKET_PAYLOAD_LENGTH;
 
   header->payloadLength = 0;
 
@@ -801,15 +802,14 @@ parseWebsocketHeader(const unsigned char *data, size_t len, struct ws_header *he
 
   for (i = 0; i < lengthNumBytes; i++) {
     size_t byte = data[2 + i];
-    if (byte > MAX_WEBSOCKET_PAYLOAD_LENGTH ||
-        header->payloadLength > (MAX_WEBSOCKET_PAYLOAD_LENGTH - byte) / 256) {
-      return -2;
+    if (byte > maxPayloadLength || header->payloadLength > (maxPayloadLength - byte) / 256) {
+      return header->opcode >= WS_OPCODE_DISCONNECT ? -1 : -2;
     }
     header->payloadLength = header->payloadLength * 256 + byte;
   }
 
-  if (header->payloadLength > MAX_WEBSOCKET_PAYLOAD_LENGTH)
-    return -2;
+  if (header->payloadLength > maxPayloadLength)
+    return header->opcode >= WS_OPCODE_DISCONNECT ? -1 : -2;
 
   ezwebsocket_log(EZLOG_DEBUG, "payloadlength:%zu\n", header->payloadLength);
 
@@ -937,7 +937,12 @@ sendDataLowLevel(struct websocket_connection_desc *wsConnectionDesc, enum ws_opc
   if (wsConnectionDesc->state == WS_STATE_CLOSED)
     return -1;
 
-  if (len > MAX_WEBSOCKET_PAYLOAD_LENGTH) {
+  if (opcode >= WS_OPCODE_DISCONNECT && (!fin || len > MAX_DEFAULT_PAYLOAD_LENGTH)) {
+    ezwebsocket_log(EZLOG_ERROR, "invalid outgoing control frame\n");
+    return -1;
+  }
+
+  if (opcode < WS_OPCODE_DISCONNECT && len > MAX_WEBSOCKET_PAYLOAD_LENGTH) {
     ezwebsocket_log(EZLOG_ERROR, "outgoing message exceeds configured maximum\n");
     return -1;
   }
@@ -1571,12 +1576,15 @@ websocket_onClose(void *socketUserData, void *socketConnectionDesc, void *wsConn
 {
   (void) socketUserData;
   struct websocket_connection_desc *wsConnectionDesc = wsConnectionDescriptor;
+  enum ws_type wsType;
   (void) socketConnectionDesc;
 
   if (wsConnectionDesc == NULL) {
     ezwebsocket_log(EZLOG_ERROR, "%s(): wsConnectionDesc must not be NULL!\n", __func__);
     return;
   }
+
+  wsType = wsConnectionDesc->wsType;
 
   if (wsConnectionDesc->lastMessage.data && wsConnectionDesc->lastMessage.complete)
     refcnt_unref(wsConnectionDesc->lastMessage.data);
@@ -1591,8 +1599,7 @@ websocket_onClose(void *socketUserData, void *socketConnectionDesc, void *wsConn
     wsConnectionDesc->state = WS_STATE_CLOSED;
   }
 
-  if (wsConnectionDesc->wsType ==
-      WS_TYPE_SERVER) // in client mode the connection descriptor is not allocated
+  if (wsType == WS_TYPE_SERVER) // in client mode the connection descriptor is not allocated
   {
     if (wsConnectionDesc->socketClientDesc)
       refcnt_unref(wsConnectionDesc->socketClientDesc);
@@ -1665,6 +1672,9 @@ websocket_onMessage(void *socketUserData, void *socketConnectionDesc, void *conn
     return 0;
   }
 
+  if (websocket_onIdle(socketUserData, socketConnectionDesc, wsConnectionDesc))
+    return len;
+
   switch (wsConnectionDesc->state) {
   case WS_STATE_HANDSHAKE:
     switch (wsConnectionDesc->wsType) {
@@ -1673,8 +1683,8 @@ websocket_onMessage(void *socketUserData, void *socketConnectionDesc, void *conn
       if (handshakeResult == 0)
         return 0;
       if (handshakeResult < 0) {
-        static const char badRequest[] =
-          "HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+        static const char badRequest
+          [] = "HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
         socketServer_send(socketConnectionDesc, (void *) badRequest, sizeof(badRequest) - 1);
         socketServer_closeConnection(socketConnectionDesc);
         return len;
@@ -1748,6 +1758,8 @@ websocket_onMessage(void *socketUserData, void *socketConnectionDesc, void *conn
       return len;
 
     case 0:
+      if (wsConnectionDesc->timeout.tv_sec == 0 && wsConnectionDesc->timeout.tv_nsec == 0)
+        clock_gettime(CLOCK_MONOTONIC, &wsConnectionDesc->timeout);
       return 0;
       break;
 
