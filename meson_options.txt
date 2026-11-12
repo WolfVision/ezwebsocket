@@ -3,6 +3,7 @@
 option('openssl', type : 'feature', value : 'disabled', description : 'Enable Openssl support for Secure Websockets')
 option('syslog', type : 'feature', value : 'disabled', description : 'Enable log to syslog')
 option('examples', type : 'feature', value : 'enabled', description : 'Build examples')
+option('tests', type : 'feature', value : 'auto', description : 'Build and run tests')
 option('max_websocket_payload_length', type : 'integer', value : 4194304, min : 1, max : 1073741824, description : 'Maximum incoming WebSocket frame and message payload size in bytes')
 
 
