@@ -28,6 +28,23 @@ Build the library and examples in a Debian-based container with OpenSSL enabled:
 
 The maximum incoming frame and message payload defaults to 4 MiB. Override it with `-Dmax_websocket_payload_length=<bytes>` when configuring Meson; the accepted range is 1 byte to 1 GiB.
 
+# Testing
+
+Build and run the unit and loopback function tests with Meson:
+
+```sh
+meson setup build-test -Dtests=enabled -Dexamples=disabled
+meson compile -C build-test
+meson test -C build-test --print-errorlogs
+```
+
+The function test opens a WebSocket server and client on an ephemeral localhost port, so loopback networking must be available. To run the tests in the Docker image:
+
+```sh
+docker build -t ezwebsocket-builder .
+docker run --rm ezwebsocket-builder meson test -C build --print-errorlogs
+```
+
 # Websocket server example
 
 compile with:
