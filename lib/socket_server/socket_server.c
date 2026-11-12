@@ -40,11 +40,15 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#define DYNBUFFER_MAX_SIZE (MAX_WEBSOCKET_PAYLOAD_LENGTH + 14)
+#define HANDSHAKE_BUFFER_SIZE 8192
+#define DYNBUFFER_MAX_SIZE                                                                         \
+  ((MAX_WEBSOCKET_PAYLOAD_LENGTH + 14) > HANDSHAKE_BUFFER_SIZE                                     \
+     ? (MAX_WEBSOCKET_PAYLOAD_LENGTH + 14)                                                         \
+     : HANDSHAKE_BUFFER_SIZE)
 #define MAX_SERVER_CONNECTIONS 128
 
 //! starting size of the message buffer (will be increased everytime the buffer is to small)
-#define READ_SIZE          1024
+#define READ_SIZE              1024
 
 //! States of the socket connection
 enum socket_connection_state {
@@ -260,9 +264,9 @@ connectionThread(void *params)
     FD_SET(connectionDesc->connectionSocketFd, &readfds);
     selectResult = select(connectionDesc->connectionSocketFd + 1, &readfds, NULL, NULL, &tv);
     if (selectResult == 0 && connectionDesc->socketDesc->socket_onIdle &&
-        connectionDesc->socketDesc->socket_onIdle(
-          connectionDesc->socketDesc->socketUserData, connectionDesc,
-          connectionDesc->connectionUserData)) {
+        connectionDesc->socketDesc->socket_onIdle(connectionDesc->socketDesc->socketUserData,
+                                                  connectionDesc,
+                                                  connectionDesc->connectionUserData)) {
       connectionDesc->state = SOCKET_SESSION_STATE_DISCONNECTED;
     }
     if (selectResult > 0) {
