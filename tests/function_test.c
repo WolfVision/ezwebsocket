@@ -230,6 +230,9 @@ test_listener_descriptor_limit(void)
     return 1;
   }
 
+  close(descriptors[descriptor_count - 1]);
+  descriptor_count--;
+
   server_init.address = "127.0.0.1";
   server_init.port = "0";
   server_init.ws_onOpen = server_on_open;
@@ -860,6 +863,9 @@ test_slow_reader_send_timeout(struct function_state *state, const char *port)
   int socket_fd;
   int wait_result = 0;
   int send_result;
+  char received_byte;
+  ssize_t received;
+  bool peer_closed = false;
 
   if (payload_length < 2 * 1024 * 1024)
     return 0;
@@ -904,9 +910,16 @@ test_slow_reader_send_timeout(struct function_state *state, const char *port)
   send_result = state->slow_send_result;
   state->slow_send_mode = false;
   pthread_mutex_unlock(&state->mutex);
+
+  if (send_result != 0) {
+    do {
+      received = recv(socket_fd, &received_byte, sizeof(received_byte), 0);
+    } while (received > 0);
+    peer_closed = received == 0;
+  }
   close(socket_fd);
 
-  return wait_result == 0 && send_result != 0 ? 0 : -1;
+  return wait_result == 0 && send_result != 0 && peer_closed ? 0 : -1;
 }
 
 static int
