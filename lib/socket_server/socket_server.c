@@ -341,10 +341,17 @@ startConnection(int socketFd, struct socket_server_desc *socketDesc)
   struct socket_connection_desc *desc;
   struct sockaddr_in sock_addr = { 0 };
   socklen_t sock_addr_len = sizeof(sock_addr);
+  struct timeval send_timeout = { .tv_sec = 5, .tv_usec = 0 };
 
   if (socketFd < 0 || socketFd >= FD_SETSIZE) {
     if (socketFd >= 0)
       close(socketFd);
+    return -1;
+  }
+
+  if (setsockopt(socketFd, SOL_SOCKET, SO_SNDTIMEO, &send_timeout, sizeof(send_timeout)) != 0) {
+    ezwebsocket_log(EZLOG_ERROR, "failed to set socket send timeout\n");
+    close(socketFd);
     return -1;
   }
 
@@ -525,6 +532,12 @@ socketServer_open(struct socket_server_init *socketInit, void *socketUserData)
     if ((socketDesc->socketFd = socket(iter->ai_family, iter->ai_socktype, iter->ai_protocol)) <
         0) {
       ezwebsocket_log(EZLOG_ERROR, "socket failed\n");
+      continue;
+    }
+
+    if (socketDesc->socketFd >= FD_SETSIZE) {
+      ezwebsocket_log(EZLOG_ERROR, "server socket exceeds FD_SETSIZE\n");
+      close(socketDesc->socketFd);
       continue;
     }
 

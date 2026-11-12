@@ -38,12 +38,16 @@ char *
 strnstr(char *haystack, char *needle, size_t haystacklen)
 {
   size_t i;
+  size_t needlelen = strlen(needle);
 
-  for (i = 0; i < haystacklen; i++) {
-    if (strncmp(&haystack[i], needle, strlen(needle)) == 0)
+  if (needlelen > haystacklen)
+    return NULL;
+
+  for (i = 0; i <= haystacklen - needlelen; i++) {
+    if (memcmp(&haystack[i], needle, needlelen) == 0)
       return &haystack[i];
   }
 
-  return 0;
+  return NULL;
 }
 #endif

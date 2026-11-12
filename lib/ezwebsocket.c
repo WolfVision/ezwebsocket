@@ -32,8 +32,10 @@
 #include "utils/utf8.h"
 #include <config.h>
 #include <ctype.h>
+#include <errno.h>
 #include <ezwebsocket.h>
 #include <ezwebsocket_log.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -62,6 +64,30 @@
 #define EXTENDED_16BIT_PAYLOAD_LENGTH 126
 //! value of the websocket payload length if the extended 64-bit length is used
 #define EXTENDED_64BIT_PAYLOAD_LENGTH 127
+
+static bool
+secureRandomBytes(unsigned char *buffer, size_t length)
+{
+  int random_fd = open("/dev/urandom", O_RDONLY);
+  size_t offset = 0;
+
+  if (random_fd < 0)
+    return false;
+
+  while (offset < length) {
+    ssize_t received = read(random_fd, &buffer[offset], length - offset);
+    if (received < 0 && errno == EINTR)
+      continue;
+    if (received <= 0) {
+      close(random_fd);
+      return false;
+    }
+    offset += (size_t) received;
+  }
+
+  close(random_fd);
+  return true;
+}
 
 //! the different websocket states
 enum ws_state { WS_STATE_HANDSHAKE, WS_STATE_CONNECTED, WS_STATE_CLOSED };
@@ -207,6 +233,93 @@ calculateSecWebSocketAccept(const char *key)
 #define WS_HS_KEY_ID  "Sec-WebSocket-Key:"
 //! websocket handshake key identifier length
 #define WS_HS_KEY_LEN 25
+#define WS_HANDSHAKE_MAX_SIZE 8192
+
+static bool
+ascii_equal(const char *value, size_t value_len, const char *expected)
+{
+  size_t i;
+
+  if (value_len != strlen(expected))
+    return false;
+
+  for (i = 0; i < value_len; i++) {
+    if (tolower((unsigned char) value[i]) != tolower((unsigned char) expected[i]))
+      return false;
+  }
+
+  return true;
+}
+
+static size_t
+find_crlf(const char *data, size_t start, size_t end)
+{
+  size_t i;
+
+  for (i = start; i + 1 < end; i++) {
+    if (data[i] == '\r' && data[i + 1] == '\n')
+      return i;
+  }
+
+  return SIZE_MAX;
+}
+
+static bool
+header_value_has_token(const char *value, size_t value_len, const char *token)
+{
+  size_t start = 0;
+  size_t end;
+
+  while (start < value_len) {
+    while (start < value_len && (value[start] == ' ' || value[start] == '\t' ||
+                                 value[start] == ','))
+      start++;
+    end = start;
+    while (end < value_len && value[end] != ',')
+      end++;
+    while (end > start && (value[end - 1] == ' ' || value[end - 1] == '\t'))
+      end--;
+    if (ascii_equal(&value[start], end - start, token))
+      return true;
+    start = end;
+    while (start < value_len && value[start] != ',')
+      start++;
+  }
+
+  return false;
+}
+
+static int
+base64_value(unsigned char value)
+{
+  if (value >= 'A' && value <= 'Z')
+    return value - 'A';
+  if (value >= 'a' && value <= 'z')
+    return value - 'a' + 26;
+  if (value >= '0' && value <= '9')
+    return value - '0' + 52;
+  if (value == '+')
+    return 62;
+  if (value == '/')
+    return 63;
+  return -1;
+}
+
+static bool
+valid_websocket_key(const char *value, size_t value_len)
+{
+  size_t i;
+
+  if (value_len != WS_HS_KEY_LEN - 1 || value[22] != '=' || value[23] != '=')
+    return false;
+
+  for (i = 0; i < 22; i++) {
+    if (base64_value((unsigned char) value[i]) < 0)
+      return false;
+  }
+
+  return (base64_value((unsigned char) value[21]) & 0x0f) == 0;
+}
 
 /**
  * \brief Parses the http header and extracts the Sec-WebSocket-Key
@@ -215,43 +328,132 @@ calculateSecWebSocketAccept(const char *key)
  * \param len Length of the header
  * \param[out] *key Pointer to where the key should be stored (should be at least WS_HS_KEY_LEN big)
  *
- * \return 0 if successful else -1
+ * \return 1 if complete and valid, 0 if incomplete, -1 if invalid
  *
  */
 static int
-parseHttpHeader(const char *wsHeader, size_t len, char *key)
+parseHttpHeader(const char *wsHeader, size_t len, char *key, size_t *headerLen)
 {
-  const char *cpnt;
+  size_t header_end = SIZE_MAX;
+  size_t request_line_end;
+  size_t first_space = SIZE_MAX;
+  size_t second_space = SIZE_MAX;
+  size_t position;
+  size_t line_end;
   size_t i;
+  bool host_seen = false;
+  bool upgrade_seen = false;
+  bool connection_seen = false;
+  bool version_seen = false;
+  bool key_seen = false;
 
-  cpnt = strnstr((char *) wsHeader, WS_HS_KEY_ID, len);
-  if (!cpnt) {
-    ezwebsocket_log(EZLOG_ERROR, "%s() couldn't find key\n", __func__);
-    return -1;
+  for (i = 0; i + 3 < len; i++) {
+    if (memcmp(&wsHeader[i], "\r\n\r\n", 4) == 0) {
+      header_end = i + 4;
+      break;
+    }
   }
-
-  cpnt += strlen(WS_HS_KEY_ID);
-
-  while ((size_t) (cpnt - wsHeader) < len && !isgraph((unsigned char) *cpnt)) {
-    cpnt++;
-  }
-
-  if ((size_t) (cpnt - wsHeader) >= len)
-    return -1;
-
-  for (i = 0; i < WS_HS_KEY_LEN - 1 && i < len - (size_t) (cpnt - wsHeader) &&
-              isgraph((unsigned char) cpnt[i]);
-       i++) {
-    key[i] = cpnt[i];
-  }
-
-  if (i < WS_HS_KEY_LEN - 1)
+  if (header_end == SIZE_MAX)
+    return len >= WS_HANDSHAKE_MAX_SIZE ? -1 : 0;
+  if (header_end > WS_HANDSHAKE_MAX_SIZE)
     return -1;
 
-  key[i] = '\0';
+  request_line_end = find_crlf(wsHeader, 0, header_end - 2);
+  if (request_line_end == SIZE_MAX)
+    return -1;
+  for (i = 0; i < request_line_end; i++) {
+    if (wsHeader[i] == ' ') {
+      if (first_space == SIZE_MAX)
+        first_space = i;
+      else {
+        second_space = i;
+        break;
+      }
+    }
+  }
+  if (first_space != 3 || second_space == SIZE_MAX ||
+      !ascii_equal(wsHeader, first_space, "GET") || second_space == first_space + 1 ||
+      !ascii_equal(&wsHeader[second_space + 1], request_line_end - second_space - 1,
+                   "HTTP/1.1"))
+    return -1;
+  for (i = first_space + 1; i < second_space; i++) {
+    if ((unsigned char) wsHeader[i] <= 0x20 || (unsigned char) wsHeader[i] == 0x7f)
+      return -1;
+  }
 
-  ezwebsocket_log(EZLOG_DEBUG, "%s() key:%s\n", __func__, key);
-  return 0;
+  position = request_line_end + 2;
+  while (position < header_end - 2) {
+    size_t colon = SIZE_MAX;
+    size_t value_start;
+    size_t value_end;
+
+    line_end = find_crlf(wsHeader, position, header_end);
+    if (line_end == SIZE_MAX)
+      return -1;
+    if (line_end == position)
+      break;
+    if (wsHeader[position] == ' ' || wsHeader[position] == '\t')
+      return -1;
+    for (i = position; i < line_end; i++) {
+      if (wsHeader[i] == ':') {
+        colon = i;
+        break;
+      }
+      if (!isalnum((unsigned char) wsHeader[i]) &&
+          !strchr("!#$%&'*+-.^_`|~", wsHeader[i]))
+        return -1;
+    }
+    if (colon == SIZE_MAX || colon == position)
+      return -1;
+
+    value_start = colon + 1;
+    value_end = line_end;
+    while (value_start < value_end && (wsHeader[value_start] == ' ' ||
+                                       wsHeader[value_start] == '\t'))
+      value_start++;
+    while (value_end > value_start && (wsHeader[value_end - 1] == ' ' ||
+                                       wsHeader[value_end - 1] == '\t'))
+      value_end--;
+    for (i = value_start; i < value_end; i++) {
+      unsigned char character = (unsigned char) wsHeader[i];
+      if ((character < 0x20 && character != '\t') || character == 0x7f)
+        return -1;
+    }
+
+    if (ascii_equal(&wsHeader[position], colon - position, "Host")) {
+      if (host_seen || value_start == value_end)
+        return -1;
+      host_seen = true;
+    } else if (ascii_equal(&wsHeader[position], colon - position, "Upgrade")) {
+      if (upgrade_seen || !header_value_has_token(&wsHeader[value_start],
+                                                   value_end - value_start, "websocket"))
+        return -1;
+      upgrade_seen = true;
+    } else if (ascii_equal(&wsHeader[position], colon - position, "Connection")) {
+      if (connection_seen || !header_value_has_token(&wsHeader[value_start],
+                                                      value_end - value_start, "upgrade"))
+        return -1;
+      connection_seen = true;
+    } else if (ascii_equal(&wsHeader[position], colon - position, "Sec-WebSocket-Version")) {
+      if (version_seen || !ascii_equal(&wsHeader[value_start], value_end - value_start, "13"))
+        return -1;
+      version_seen = true;
+    } else if (ascii_equal(&wsHeader[position], colon - position, "Sec-WebSocket-Key")) {
+      if (key_seen || !valid_websocket_key(&wsHeader[value_start], value_end - value_start))
+        return -1;
+      memcpy(key, &wsHeader[value_start], WS_HS_KEY_LEN - 1);
+      key[WS_HS_KEY_LEN - 1] = '\0';
+      key_seen = true;
+    }
+
+    position = line_end + 2;
+  }
+
+  if (!host_seen || !upgrade_seen || !connection_seen || !version_seen || !key_seen)
+    return -1;
+
+  *headerLen = header_end;
+  return 1;
 }
 
 //! blueprint for the websocket handshake reply
@@ -295,63 +497,121 @@ sendWsHandshakeReply(struct socket_connection_desc *socketConnectionDesc, const 
  * \param *header Pointer to the header
  * \param[in,out] len Input the length of the message output the length of the header
  *
- * \return True => handshake correct else false
+ * \return 1 if valid, 0 if incomplete, -1 if invalid
  */
-static bool
-checkWsHandshakeReply(struct websocket_connection_desc *wsConnectionDesc, char *header, size_t *len)
+static int
+checkWsHandshakeReply(struct websocket_connection_desc *wsConnectionDesc, const char *header,
+                      size_t len, size_t *headerLen)
 {
   if (wsConnectionDesc->wsType == WS_TYPE_SERVER)
-    return false;
+    return -1;
 
   struct websocket_client_desc *wsDesc = wsConnectionDesc->wsDesc.wsClientDesc;
+  size_t end = SIZE_MAX;
+  size_t request_line_end;
+  size_t position;
+  size_t line_end;
+  size_t accepted_start = 0;
+  size_t accepted_len = 0;
+  size_t i;
+  bool upgrade_seen = false;
+  bool connection_seen = false;
+  bool accept_seen = false;
+  char *accept_string;
 
-  char *cpnt;
-  unsigned long i;
-  char key[30];
-  char *acceptString = NULL;
-  bool retVal = false;
+  for (i = 0; i + 3 < len; i++) {
+    if (memcmp(&header[i], "\r\n\r\n", 4) == 0) {
+      end = i + 4;
+      break;
+    }
+  }
+  if (end == SIZE_MAX)
+    return len >= WS_HANDSHAKE_MAX_SIZE ? -1 : 0;
+  if (end > WS_HANDSHAKE_MAX_SIZE)
+    return -1;
 
-  ezwebsocket_log(EZLOG_DEBUG, "%s() HS_REPLY_ID: %.*s\n", __func__, (int) *len, header);
-  cpnt = strnstr(header, WS_HS_REPLY_ID, *len);
-  if (!cpnt) {
-    ezwebsocket_log(EZLOG_ERROR, "%s() couldn't find key\n", __func__);
-    return false;
+  request_line_end = find_crlf(header, 0, end - 2);
+  if (request_line_end == SIZE_MAX || request_line_end < 12 ||
+      memcmp(header, "HTTP/1.1 101", 12) != 0 ||
+      (request_line_end > 12 && header[12] != ' '))
+    return -1;
+
+  position = request_line_end + 2;
+  while (position < end - 2) {
+    size_t colon = SIZE_MAX;
+    size_t value_start;
+    size_t value_end;
+
+    line_end = find_crlf(header, position, end);
+    if (line_end == SIZE_MAX)
+      return -1;
+    if (line_end == position)
+      break;
+    if (header[position] == ' ' || header[position] == '\t')
+      return -1;
+    for (i = position; i < line_end; i++) {
+      if (header[i] == ':') {
+        colon = i;
+        break;
+      }
+      if (!isalnum((unsigned char) header[i]) &&
+          !strchr("!#$%&'*+-.^_`|~", (unsigned char) header[i]))
+        return -1;
+    }
+    if (colon == SIZE_MAX || colon == position)
+      return -1;
+
+    value_start = colon + 1;
+    value_end = line_end;
+    while (value_start < value_end && (header[value_start] == ' ' || header[value_start] == '\t'))
+      value_start++;
+    while (value_end > value_start &&
+           (header[value_end - 1] == ' ' || header[value_end - 1] == '\t'))
+      value_end--;
+    for (i = value_start; i < value_end; i++) {
+      unsigned char character = (unsigned char) header[i];
+      if ((character < 0x20 && character != '\t') || character == 0x7f)
+        return -1;
+    }
+
+    if (ascii_equal(&header[position], colon - position, "Upgrade")) {
+      if (upgrade_seen || !header_value_has_token(&header[value_start], value_end - value_start,
+                                                   "websocket"))
+        return -1;
+      upgrade_seen = true;
+    } else if (ascii_equal(&header[position], colon - position, "Connection")) {
+      if (connection_seen || !header_value_has_token(&header[value_start], value_end - value_start,
+                                                      "upgrade"))
+        return -1;
+      connection_seen = true;
+    } else if (ascii_equal(&header[position], colon - position, "Sec-WebSocket-Accept")) {
+      if (accept_seen || value_start == value_end)
+        return -1;
+      accepted_start = value_start;
+      accepted_len = value_end - value_start;
+      accept_seen = true;
+    }
+
+    position = line_end + 2;
   }
 
-  cpnt += strlen(WS_HS_REPLY_ID);
+  if (!upgrade_seen || !connection_seen || !accept_seen)
+    return -1;
 
-  while ((size_t) (cpnt - header) < *len && !isgraph((unsigned char) *cpnt)) {
-    cpnt++;
-  }
-
-  if ((size_t) (cpnt - header) >= *len)
-    return false;
-
-  for (i = 0; i < sizeof(key) - 1 && i < *len - (size_t) (cpnt - header) &&
-              isgraph((unsigned char) cpnt[i]);
-       i++) {
-    key[i] = cpnt[i];
-  }
-
-  key[i] = '\0';
-
-  cpnt = strnstr(header, "\r\n\r\n", *len);
-  if (cpnt == NULL)
-    return false;
-  cpnt += strlen("\r\n\r\n");
-
-  *len = (uintptr_t) cpnt - (uintptr_t) header;
-
-  acceptString = calculateSecWebSocketAccept(wsDesc->wsKey);
-  if (acceptString == NULL) {
+  accept_string = calculateSecWebSocketAccept(wsDesc->wsKey);
+  if (accept_string == NULL) {
     ezwebsocket_log(EZLOG_ERROR, "calculateSecWebSocketAccept failed\n");
-    return false;
+    return -1;
   }
 
-  retVal = (strcmp(key, acceptString) == 0);
+  i = accepted_len == strlen(accept_string) &&
+      memcmp(&header[accepted_start], accept_string, accepted_len) == 0;
+  free(accept_string);
+  if (!i)
+    return -1;
 
-  free(acceptString);
-  return retVal;
+  *headerLen = end;
+  return 1;
 }
 
 /**
@@ -365,13 +625,13 @@ static bool
 sendWsHandshakeRequest(struct websocket_connection_desc *wsConnectionDesc)
 {
   unsigned char wsKeyBytes[16];
-  unsigned long i;
   char *requestHeader = NULL;
   bool success = false;
   struct websocket_client_desc *wsDesc = wsConnectionDesc->wsDesc.wsClientDesc;
 
-  for (i = 0; i < sizeof(wsKeyBytes); i++) {
-    wsKeyBytes[i] = rand();
+  if (!secureRandomBytes(wsKeyBytes, sizeof(wsKeyBytes))) {
+    ezwebsocket_log(EZLOG_ERROR, "failed to get a secure handshake key\n");
+    goto EXIT;
   }
 
   wsDesc->wsKey = base64_encode(wsKeyBytes, sizeof(wsKeyBytes));
@@ -402,6 +662,23 @@ EXIT:
   }
   free(requestHeader);
   return success;
+}
+
+static bool
+validClientRequestPart(const char *value)
+{
+  const unsigned char *character = (const unsigned char *) value;
+
+  if (!character || !*character)
+    return false;
+
+  while (*character) {
+    if (*character <= 0x20 || *character == 0x7f)
+      return false;
+    character++;
+  }
+
+  return true;
 }
 
 // Frame format of a websocket:
@@ -651,6 +928,7 @@ sendDataLowLevel(struct websocket_connection_desc *wsConnectionDesc, enum ws_opc
                  bool fin, bool masked, const void *msg, size_t len)
 {
   unsigned char header[14]; // the maximum size of a websocket header is 14
+  unsigned char maskBytes[4];
   int headerLength;
   unsigned char *sendBuffer;
   int rc = -1;
@@ -665,7 +943,12 @@ sendDataLowLevel(struct websocket_connection_desc *wsConnectionDesc, enum ws_opc
   }
 
   if (masked) {
-    mask = (rand() << 16) | (rand() & 0x0000FFFF);
+    if (!secureRandomBytes(maskBytes, sizeof(maskBytes))) {
+      ezwebsocket_log(EZLOG_ERROR, "failed to get a secure frame mask\n");
+      return -1;
+    }
+    mask = ((unsigned long) maskBytes[0] << 24) | ((unsigned long) maskBytes[1] << 16) |
+           ((unsigned long) maskBytes[2] << 8) | (unsigned long) maskBytes[3];
   }
 
   headerLength = createWebsocketHeader(header, opcode, fin, masked, mask, len);
@@ -1006,9 +1289,7 @@ handleDisconnectMessage(struct websocket_connection_desc *wsConnectionDesc,
                         const unsigned char *data, struct ws_header *header)
 {
   size_t i;
-  int rc;
   unsigned long utf8Handle = 0;
-  bool masked = (wsConnectionDesc->wsType == WS_TYPE_CLIENT);
 
   if ((header->fin) && (header->payloadLength != 1) &&
       (header->payloadLength <= MAX_DEFAULT_PAYLOAD_LENGTH)) {
@@ -1042,29 +1323,9 @@ handleDisconnectMessage(struct websocket_connection_desc *wsConnectionDesc,
         return WS_MSG_STATE_ERROR;
       }
     } else {
-      if ((header->payloadLength == 2) ||
-          utf8_validate((char *) &data[header->payloadStartOffset + 2], header->payloadLength - 2,
-                        &utf8Handle)) {
-        ezwebsocket_log(EZLOG_INFO, "SEND DISCONNECT\n");
-        if (sendDataLowLevel(wsConnectionDesc, WS_OPCODE_DISCONNECT, true, masked,
-                             &data[header->payloadStartOffset], header->payloadLength) == 0)
-          rc = WS_MSG_STATE_NO_USER_DATA;
-        else
-          rc = WS_MSG_STATE_ERROR;
-        switch (wsConnectionDesc->wsType) {
-        case WS_TYPE_SERVER:
-          socketServer_closeConnection(wsConnectionDesc->socketClientDesc);
-          break;
-
-        case WS_TYPE_CLIENT:
-          socketClient_closeConnection(wsConnectionDesc->wsDesc.wsClientDesc->socketDesc);
-          break;
-        }
-      } else {
-        websocket_closeConnection(wsConnectionDesc, WS_CLOSE_CODE_INVALID_DATA);
-        rc = WS_MSG_STATE_ERROR;
-      }
-      return rc;
+      ezwebsocket_log(EZLOG_ERROR, "close frame mask bit wrong\n");
+      websocket_closeConnection(wsConnectionDesc, WS_CLOSE_CODE_PROTOCOL_ERROR);
+      return WS_MSG_STATE_ERROR;
     }
   } else {
     websocket_closeConnection(wsConnectionDesc, WS_CLOSE_CODE_PROTOCOL_ERROR);
@@ -1387,6 +1648,8 @@ websocket_onMessage(void *socketUserData, void *socketConnectionDesc, void *conn
   struct websocket_connection_desc *wsConnectionDesc = connectionDescriptor;
   struct ws_header wsHeader = { 0 };
   struct timespec now;
+  size_t handshakeHeaderLen;
+  int handshakeResult;
 
   char key[WS_HS_KEY_LEN];
   char *replyKey;
@@ -1405,7 +1668,18 @@ websocket_onMessage(void *socketUserData, void *socketConnectionDesc, void *conn
   case WS_STATE_HANDSHAKE:
     switch (wsConnectionDesc->wsType) {
     case WS_TYPE_SERVER:
-      if (parseHttpHeader(msg, len, key) == 0) {
+      handshakeResult = parseHttpHeader(msg, len, key, &handshakeHeaderLen);
+      if (handshakeResult == 0)
+        return 0;
+      if (handshakeResult < 0) {
+        static const char badRequest[] =
+          "HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+        socketServer_send(socketConnectionDesc, (void *) badRequest, sizeof(badRequest) - 1);
+        socketServer_closeConnection(socketConnectionDesc);
+        return len;
+      }
+
+      {
         struct websocket_server_desc *wsDesc = socketUserData;
 
         replyKey = calculateSecWebSocketAccept(key);
@@ -1416,7 +1690,11 @@ websocket_onMessage(void *socketUserData, void *socketConnectionDesc, void *conn
 
         ezwebsocket_log(EZLOG_DEBUG, "%s() replyKey:%s\n", __func__, replyKey);
 
-        sendWsHandshakeReply(socketConnectionDesc, replyKey);
+        if (sendWsHandshakeReply(socketConnectionDesc, replyKey) != 0) {
+          free(replyKey);
+          socketServer_closeConnection(socketConnectionDesc);
+          return len;
+        }
 
         free(replyKey);
         wsConnectionDesc->state = WS_STATE_CONNECTED;
@@ -1426,13 +1704,22 @@ websocket_onMessage(void *socketUserData, void *socketConnectionDesc, void *conn
 
         if (wsDesc->ws_onOpenLegacy != NULL)
           wsConnectionDesc->connectionUserData = wsDesc->ws_onOpenLegacy(wsDesc, wsConnectionDesc);
-      } else {
-        ezwebsocket_log(EZLOG_ERROR, "parseHttpHeader failed\n");
+        len = handshakeHeaderLen;
       }
       break;
 
     case WS_TYPE_CLIENT:
-      if (checkWsHandshakeReply(wsConnectionDesc, msg, &len)) {
+      handshakeResult = checkWsHandshakeReply(wsConnectionDesc, msg, len, &handshakeHeaderLen);
+      if (handshakeResult == 0)
+        return 0;
+      if (handshakeResult < 0) {
+        ezwebsocket_log(EZLOG_ERROR, "invalid WebSocket handshake response\n");
+        wsConnectionDesc->state = WS_STATE_CLOSED;
+        socketClient_closeConnection(wsConnectionDesc->socketClientDesc);
+        return len;
+      }
+
+      {
         struct websocket_client_desc *wsDesc = wsConnectionDesc->wsDesc.wsClientDesc;
 
         wsConnectionDesc->state = WS_STATE_CONNECTED;
@@ -1442,8 +1729,7 @@ websocket_onMessage(void *socketUserData, void *socketConnectionDesc, void *conn
                                                                    wsConnectionDesc);
         else
           wsConnectionDesc->connectionUserData = NULL;
-      } else {
-        ezwebsocket_log(EZLOG_ERROR, "checkWsHandshakeReply failed\n");
+        len = handshakeHeaderLen;
       }
       break;
     }
@@ -1800,6 +2086,12 @@ websocketClient_open(struct websocket_client_init *wsInit, void *websocketUserDa
   struct socket_client_init socketInit = { 0 };
   struct websocket_connection_desc *wsConnection;
 
+  if (!wsInit || !validClientRequestPart(wsInit->address) ||
+      !validClientRequestPart(wsInit->port) || !validClientRequestPart(wsInit->endpoint)) {
+    ezwebsocket_log(EZLOG_ERROR, "invalid WebSocket client request field\n");
+    return NULL;
+  }
+
   wsConnection = refcnt_allocate(sizeof(struct websocket_connection_desc), freeConnection);
   if (wsConnection == NULL) {
     goto ERROR;
@@ -1881,6 +2173,9 @@ websocketClient_open(struct websocket_client_init *wsInit, void *websocketUserDa
       goto ERROR;
     usleep(10000);
   }
+
+  if (wsConnection->state != WS_STATE_CONNECTED)
+    goto ERROR;
 
   return wsConnection;
 
