@@ -101,6 +101,24 @@ struct socket_client_desc {
 };
 
 static void
+socketClient_closeTransport(struct socket_client_desc *socketDesc)
+{
+#ifdef HAVE_OPENSSL
+  if (socketDesc->ssl) {
+    SSL_free(socketDesc->ssl);
+    SSL_CTX_free(socketDesc->ssl_ctx);
+    socketDesc->ssl = NULL;
+    socketDesc->ssl_ctx = NULL;
+  }
+#endif
+
+  if (socketDesc->socketFd != -1) {
+    close(socketDesc->socketFd);
+    socketDesc->socketFd = -1;
+  }
+}
+
+static void
 socketClient_freeResources(struct socket_client_desc *socketDesc, bool fromThread)
 {
   if (fromThread)
@@ -109,16 +127,7 @@ socketClient_freeResources(struct socket_client_desc *socketDesc, bool fromThrea
   if (socketDesc->buffer.buffer)
     dynBuffer_delete(&socketDesc->buffer);
   pthread_mutex_destroy(&socketDesc->initDoneSignal);
-
-#ifdef HAVE_OPENSSL
-  if (socketDesc->ssl) {
-    SSL_free(socketDesc->ssl);
-    SSL_CTX_free(socketDesc->ssl_ctx);
-  }
-#endif
-
-  if (socketDesc->socketFd != -1)
-    close(socketDesc->socketFd);
+  socketClient_closeTransport(socketDesc);
   free(socketDesc);
 }
 
@@ -211,6 +220,7 @@ socketClientThread(void *socketDescriptor)
     socketDesc->socket_onClose(socketDesc->socketUserData, socketDesc, socketDesc->sessionData);
 
   socketDesc->state = SOCKET_CLIENT_STATE_DISCONNECTED;
+  socketClient_closeTransport(socketDesc);
   socketDesc->taskRunning = false;
 
   if (socketDesc->cleanupOnThreadExit) {
