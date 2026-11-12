@@ -6,8 +6,8 @@ The following versions are maintained:
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 3.0.2   | :white_check_mark: |
-| < 3.0.2 | :x:                |
+| 3.0.3   | :white_check_mark: |
+| < 3.0.3 | :x:                |
 
 ## Reporting a Vulnerability
 
