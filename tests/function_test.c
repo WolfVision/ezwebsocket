@@ -38,6 +38,8 @@ struct function_state {
   size_t messages_echoed;
   bool messages_match;
   bool echoes_succeeded;
+  bool client_closed;
+  bool client_close_callback_saw_closed_state;
   bool slow_send_mode;
   bool slow_send_finished;
   int slow_send_result;
@@ -92,6 +94,20 @@ client_on_open(void *websocket_user_data, struct websocket_connection_desc *conn
   (void) websocket_user_data;
   (void) connection;
   return NULL;
+}
+
+static void
+client_on_close(void *websocket_user_data, struct websocket_connection_desc *connection,
+                void *connection_user_data)
+{
+  struct function_state *state = websocket_user_data;
+
+  (void) connection_user_data;
+  pthread_mutex_lock(&state->mutex);
+  state->client_closed = true;
+  state->client_close_callback_saw_closed_state = !websocketConnection_isConnected(connection);
+  pthread_cond_broadcast(&state->condition);
+  pthread_mutex_unlock(&state->mutex);
 }
 
 static void
@@ -927,6 +943,7 @@ main(void)
   client_init.port = port;
   client_init.endpoint = "/";
   client_init.ws_onOpen = client_on_open;
+  client_init.ws_onClose = client_on_close;
   client_init.ws_onMessage = client_on_message;
   client = websocketClient_open(&client_init, &state);
   if (client == NULL) {
@@ -959,8 +976,28 @@ main(void)
   success = wait_result == 0 && state.messages_match && state.echoes_succeeded;
   pthread_mutex_unlock(&state.mutex);
 
+  if (success) {
+    websocket_ref(client);
+    websocketClient_close(client, WS_CLOSE_CODE_NORMAL);
+
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += 5;
+    pthread_mutex_lock(&state.mutex);
+    wait_result = 0;
+    while (!state.client_closed && wait_result == 0)
+      wait_result = pthread_cond_timedwait(&state.condition, &state.mutex, &deadline);
+    success = wait_result == 0 && state.client_close_callback_saw_closed_state;
+    pthread_mutex_unlock(&state.mutex);
+
+    websocket_unref(client);
+    client = NULL;
+  }
+
   if (!success)
-    fprintf(stderr, "loopback echo, fragmentation, or payload-limit test failed\n");
+    fprintf(stderr,
+            "loopback test failed: wait=%d received=%zu echoed=%zu matches=%d sends=%d\n",
+            wait_result, state.messages_received, state.messages_echoed, state.messages_match,
+            state.echoes_succeeded);
 
 cleanup:
   if (client != NULL)

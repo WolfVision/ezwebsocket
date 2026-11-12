@@ -583,8 +583,7 @@ socketServer_open(struct socket_server_init *socketInit, void *socketUserData)
 
   freeaddrinfo(serverinfo);
 
-  // wait for connections allow up to 10 connections in queue
-  if (listen(socketDesc->socketFd, 10) < 0)
+  if (listen(socketDesc->socketFd, MAX_SERVER_CONNECTIONS) < 0)
     ezwebsocket_log(EZLOG_ERROR, "listen failed\n");
 
   socketDesc->running = true;

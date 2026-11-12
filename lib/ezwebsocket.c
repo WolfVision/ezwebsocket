@@ -1586,8 +1586,9 @@ websocket_onClose(void *socketUserData, void *socketConnectionDesc, void *wsConn
 
   if (wsConnectionDesc->state == WS_STATE_CONNECTED) {
     wsConnectionDesc->state = WS_STATE_CLOSED;
-
     callOnClose(wsConnectionDesc);
+  } else {
+    wsConnectionDesc->state = WS_STATE_CLOSED;
   }
 
   if (wsConnectionDesc->wsType ==
@@ -2199,8 +2200,8 @@ websocketClient_close(struct websocket_connection_desc *wsConnectionDesc, enum w
 
   if (wsConnectionDesc->socketClientDesc)
     websocket_closeConnection(wsConnectionDesc, code);
-  freeConnection(wsConnectionDesc);
-  wsConnectionDesc->state = WS_STATE_CLOSED;
+  else
+    wsConnectionDesc->state = WS_STATE_CLOSED;
   refcnt_unref(wsConnectionDesc);
 }
 

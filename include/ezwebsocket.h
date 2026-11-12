@@ -1,9 +1,11 @@
 /* EzWebSocket
  *
- * Copyright © 2017 Clemens Kresser
+ * \brief Closes a websocket client and releases the caller's reference
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
+ *
+ * Other references keep the descriptor alive until they are released with websocket_unref.
  * to deal in the Software without restriction, including without limitation
  * the rights to use, copy, modify, merge, publish, distribute, sublicense,
  * and/or sell copies of the Software, and to permit persons to whom the
@@ -229,6 +231,9 @@ websocketConnection_isConnected(struct websocket_connection_desc *wsConnectionDe
  * \brief Increments the reference count of the given object
  *
  * \param *ptr poiner to the object
+ *
+ * Take a reference before sharing a connection descriptor across threads, and release it after
+ * the final use. The pointer must be valid when this function is called.
  */
 void
 websocket_ref(void *ptr);
