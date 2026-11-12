@@ -257,7 +257,7 @@ mock_handshake_server(void *argument)
   char *key;
   char *accept_key;
   size_t request_length = 0;
-  unsigned char digest[20];
+  unsigned char digest[21];
   int connection_fd;
 
   connection_fd = accept(response->listen_fd, (struct sockaddr *) &peer_address,
@@ -294,7 +294,7 @@ mock_handshake_server(void *argument)
 #else
   SHA1((char *) digest, accept_input, (int) strlen(accept_input));
 #endif
-  accept_key = base64_encode(digest, sizeof(digest));
+  accept_key = base64_encode(digest, sizeof(digest) - 1);
   if (accept_key == NULL)
     goto cleanup;
 

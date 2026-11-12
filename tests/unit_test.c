@@ -1,4 +1,5 @@
 #include "dyn_buffer.h"
+#include "ref_count.h"
 #include "stringck.h"
 #include "utf8.h"
 
@@ -23,6 +24,12 @@ test_bounded_string_search(void)
            strnstr(haystack, "WebSocket", haystack_length) != haystack + 5;
   free(haystack);
   return failed;
+}
+
+static int
+test_ref_count_allocation_overflow(void)
+{
+  return refcnt_allocate(SIZE_MAX, NULL) == NULL ? 0 : 1;
 }
 
 static int
@@ -97,6 +104,11 @@ main(void)
 {
   if (test_bounded_string_search() != 0) {
     fprintf(stderr, "bounded string search unit test failed\n");
+    return 1;
+  }
+
+  if (test_ref_count_allocation_overflow() != 0) {
+    fprintf(stderr, "reference-counted allocation overflow test failed\n");
     return 1;
   }
 
