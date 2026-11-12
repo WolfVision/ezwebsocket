@@ -434,10 +434,15 @@ socketServer_send(struct socket_connection_desc *connectionDesc, void *msg, size
     return -1;
 
   rc = send(connectionDesc->connectionSocketFd, msg, len, MSG_NOSIGNAL);
-  if (rc == -1) {
+  if (rc < 0) {
     ezwebsocket_log(EZLOG_ERROR, "send failed: %s\n", strerror(errno));
   }
-  return ((size_t) rc == len ? 0 : -1);
+  if (rc < 0 || (size_t) rc != len) {
+    socketServer_closeConnection(connectionDesc);
+    return -1;
+  }
+
+  return 0;
 }
 
 /**
