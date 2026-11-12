@@ -1,0 +1,12 @@
+v3.0.3:
+
+	- Security and resource hardening:
+		- Add a configurable WebSocket data payload limit (4 MiB by default, configurable from 1 byte to 1 GiB), bound receive buffers, reject oversized frames and fragmented messages, and guard length/allocation arithmetic.
+		- Limit servers to 128 active connections; enforce bounded HTTP handshakes and handshake/message deadlines; validate listener descriptors and clean up failed connection setup.
+		- Validate HTTP/1.1 WebSocket upgrade requests and responses, handle case-insensitive and repeated list-valued headers, reject malformed requests, and preserve data received after the handshake.
+		- Use operating-system randomness for client handshake keys and frame masks, validate control-frame limits, and allow close frames under small data payload limits.
+		- Bound blocking server writes and disconnect peers after incomplete writes; compact dynamic buffers lazily to avoid repeated data movement.
+		- Defer client transport cleanup until the socket worker exits and preserve WebSocket descriptors while references remain.
+		- Make SHA-1 temporary-state clearing resistant to dead-store elimination.
+	- Add unit and loopback regression tests for payload boundaries, malformed and split handshakes, connection and deadline limits, descriptor exhaustion, slow readers, close-frame handling, reference lifetimes, and utility edge cases.
+	- Add GitHub Actions test and coverage jobs for OpenSSL-enabled and disabled builds, an Alpine-based Docker build, and documentation for testing and security reporting.
