@@ -1492,8 +1492,13 @@ websocket_onIdle(void *socketUserData, void *socketConnectionDesc, void *connect
     return true;
 
   clock_gettime(CLOCK_MONOTONIC, &now);
-  if (wsConnectionDesc->state == WS_STATE_HANDSHAKE && wsConnectionDesc->wsType == WS_TYPE_SERVER)
-    return now.tv_sec - wsConnectionDesc->handshakeStartedAt.tv_sec >= HANDSHAKE_TIMEOUT_S;
+  if (wsConnectionDesc->state == WS_STATE_HANDSHAKE && wsConnectionDesc->wsType == WS_TYPE_SERVER) {
+    if (now.tv_sec - wsConnectionDesc->handshakeStartedAt.tv_sec >= HANDSHAKE_TIMEOUT_S) {
+      socketServer_closeConnection(wsConnectionDesc->socketClientDesc);
+      return true;
+    }
+    return false;
+  }
 
   if (wsConnectionDesc->timeout.tv_sec || wsConnectionDesc->timeout.tv_nsec) {
     time_t elapsed = now.tv_sec - wsConnectionDesc->timeout.tv_sec;
@@ -1604,6 +1609,8 @@ websocket_onClose(void *socketUserData, void *socketConnectionDesc, void *wsConn
     if (wsConnectionDesc->socketClientDesc)
       refcnt_unref(wsConnectionDesc->socketClientDesc);
     wsConnectionDesc->socketClientDesc = NULL;
+    refcnt_unref(wsConnectionDesc);
+  } else {
     refcnt_unref(wsConnectionDesc);
   }
 }
@@ -2173,6 +2180,7 @@ websocketClient_open(struct websocket_client_init *wsInit, void *websocketUserDa
     goto ERROR;
   }
 
+  websocket_ref(wsConnection);
   socketClient_start(wsConnection->socketClientDesc);
 
   struct timespec timeoutStartTime;
